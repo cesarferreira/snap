@@ -92,21 +92,25 @@ pub fn center_rect(usable: Rect, width: f64, height: f64) -> Rect {
 }
 
 /// Sizes cycled through when a size is omitted (e.g. `snap left` with no
-/// percent) — repeated invocations step 25% → 50% → 75% → 25% → ..., like
+/// percent) — repeated invocations step 50% → 75% → 25% → 50% → ..., like
 /// Rectangle's cycling. Deliberately excludes 100/full, which stays an
 /// explicit-only command.
 pub const CYCLE_PERCENTS: [u32; 3] = [25, 50, 75];
 
+/// The step to enter the cycle at when the window doesn't currently match
+/// any step (matches Rectangle: the first press snaps to half, not quarter).
+const CYCLE_ENTRY_PERCENT: u32 = 50;
+
 /// The percent to apply next in the cycle. `current` is the step the window
 /// is presently at (from [`detect_directional_percent`] /
 /// [`detect_centered_percent`]), or `None` if it doesn't match any step —
-/// in which case the cycle (re)starts from the first size. This makes
+/// in which case the cycle (re)starts at [`CYCLE_ENTRY_PERCENT`]. This makes
 /// cycling stateless: each invocation derives "where we are" from the
 /// window's live geometry rather than remembering prior invocations.
 pub fn next_cycle_percent(current: Option<u32>) -> u32 {
     match current.and_then(|p| CYCLE_PERCENTS.iter().position(|&step| step == p)) {
         Some(i) => CYCLE_PERCENTS[(i + 1) % CYCLE_PERCENTS.len()],
-        None => CYCLE_PERCENTS[0],
+        None => CYCLE_ENTRY_PERCENT,
     }
 }
 
@@ -326,10 +330,10 @@ mod tests {
     }
 
     #[test]
-    fn cycle_starts_at_25_when_no_match() {
-        assert_eq!(next_cycle_percent(None), 25);
-        assert_eq!(next_cycle_percent(Some(33)), 25);
-        assert_eq!(next_cycle_percent(Some(100)), 25);
+    fn cycle_starts_at_50_when_no_match() {
+        assert_eq!(next_cycle_percent(None), 50);
+        assert_eq!(next_cycle_percent(Some(33)), 50);
+        assert_eq!(next_cycle_percent(Some(100)), 50);
     }
 
     #[test]
@@ -375,6 +379,6 @@ mod tests {
             steps.push(next);
             window = directional_rect(SCREEN, Position::Left, next);
         }
-        assert_eq!(steps, vec![25, 50, 75, 25, 50, 75]);
+        assert_eq!(steps, vec![50, 75, 25, 50, 75, 25]);
     }
 }

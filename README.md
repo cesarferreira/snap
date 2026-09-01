@@ -113,7 +113,7 @@ snap 75
 snap 100   # same as `snap full`
 ```
 
-Omit the percentage to **cycle** 25% → 50% → 75% → 25% → ... each time you
+Omit the percentage to **cycle** 50% → 75% → 25% → 50% → ... each time you
 run it, like Rectangle:
 
 ```bash
@@ -138,7 +138,7 @@ snap bottom 50
 Omit the size to cycle the same way, per side:
 
 ```bash
-snap left    # 25% → 50% → 75% → 25% → ...
+snap left    # 50% → 75% → 25% → 50% → ...
 ```
 
 ### Commands
