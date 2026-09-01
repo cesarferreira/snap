@@ -93,6 +93,13 @@ pub enum Command {
         #[arg(value_enum)]
         direction: Direction,
     },
+    /// One-shot accordion: one window fills the usable bounds, the rest peek
+    /// from the edges. Omit ACTION to apply with the focused window as
+    /// front; `next`/`previous` (alias `prev`) rotate which window is front.
+    Stack {
+        #[arg(value_name = "ACTION", value_parser = parse_stack_action)]
+        action: Option<StackAction>,
+    },
     /// Move the focused window to another display, preserving its relative
     /// position and size.
     Display {
@@ -106,6 +113,22 @@ pub enum Command {
 pub enum ListScope {
     Current,
     All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackAction {
+    Next,
+    Previous,
+}
+
+fn parse_stack_action(s: &str) -> Result<StackAction, String> {
+    match s {
+        "next" => Ok(StackAction::Next),
+        "previous" | "prev" => Ok(StackAction::Previous),
+        _ => Err(format!(
+            "invalid stack action '{s}' (expected next or previous)"
+        )),
+    }
 }
 
 fn parse_third(s: &str) -> Result<Third, String> {

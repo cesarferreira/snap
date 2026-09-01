@@ -1,4 +1,5 @@
 mod accessibility;
+mod accordion;
 mod cli;
 mod config;
 mod display;
@@ -11,7 +12,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use cli::{Cli, Command, ListScope};
+use cli::{Cli, Command, ListScope, StackAction};
 use layout::{
     DisplayTarget, MAX_PERCENT, MIN_PERCENT, Rect, almost_rect, center_rect,
     detect_centered_percent, detect_directional_percent, detect_third, directional_rect, full_rect,
@@ -95,6 +96,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Action::List(scope) => run_list(scope, config.stage_manager_width),
         Action::Focus(direction) => run_focus(direction, config.stage_manager_width),
         Action::Swap(direction) => run_swap(direction, config.stage_manager_width),
+        Action::Stack(action) => run_stack(
+            action,
+            config.padding,
+            config.stage_manager_width,
+            config.accordion_padding,
+        ),
     }
 }
 
@@ -112,6 +119,7 @@ enum Action {
     List(ListScope),
     Focus(Direction),
     Swap(Direction),
+    Stack(Option<StackAction>),
 }
 
 fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> {
@@ -163,6 +171,7 @@ fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> 
             Command::List { display } => Ok(Action::List(*display)),
             Command::Focus { direction } => Ok(Action::Focus(*direction)),
             Command::Swap { direction } => Ok(Action::Swap(*direction)),
+            Command::Stack { action } => Ok(Action::Stack(*action)),
             Command::Third { position } => match position {
                 Some(third) => {
                     let third = *third;
@@ -443,6 +452,110 @@ fn direction_word(direction: Direction) -> &'static str {
         Direction::Up => "up",
         Direction::Down => "down",
     }
+}
+
+/// `snap stack [next|previous]` — one-shot accordion on the current
+/// display: one window fills usable bounds, the rest peek from the edges.
+/// Uses the same candidate set as `snap tile`.
+fn run_stack(
+    action: Option<StackAction>,
+    padding: f64,
+    stage_manager_width: f64,
+    accordion_padding: f64,
+) -> anyhow::Result<()> {
+    let focused = window::Window::focused()
+        .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
+    let focused_rect = focused.rect().map_err(runtime_failure)?;
+    let target_display =
+        display::target_display_for(focused_rect, stage_manager_width).map_err(runtime_failure)?;
+
+    let mut candidates =
+        window::visible_windows_on(target_display.frame).map_err(runtime_failure)?;
+    let focused_index = candidates
+        .iter()
+        .position(|c| rects_roughly_equal(c.rect, focused_rect));
+
+    let mut all = Vec::with_capacity(candidates.len().max(1));
+    match focused_index {
+        Some(idx) => all.push(candidates.remove(idx)),
+        None => all.push(window::TileCandidate {
+            window: focused,
+            rect: focused_rect,
+            pid: 0,
+            app_name: String::new(),
+            title: None,
+            window_number: -1,
+        }),
+    }
+    all.extend(candidates); // all[0] = focused; the rest in tile (visual) order.
+
+    let n = all.len();
+    let usable = padded(target_display.usable, padding);
+
+    // Tile (visual) order over the same candidate set, independent of
+    // which one is focused — used to detect/cycle an existing accordion.
+    let mut visual_order: Vec<usize> = (0..n).collect();
+    visual_order.sort_by(|&a, &b| {
+        all[a]
+            .rect
+            .y
+            .partial_cmp(&all[b].rect.y)
+            .unwrap()
+            .then(all[a].rect.x.partial_cmp(&all[b].rect.x).unwrap())
+    });
+
+    match action {
+        None => {
+            if n == 1 {
+                return all[0].window.set_rect(usable).map_err(runtime_failure);
+            }
+            // Focused first, then the rest in tile order.
+            let mut order = vec![0];
+            order.extend(visual_order.iter().copied().filter(|&i| i != 0));
+            apply_accordion(&all, &order, usable, accordion_padding, 0);
+            raise_and_activate(&all[order[0]]).map_err(runtime_failure)
+        }
+        Some(direction) => {
+            if n == 1 {
+                return Err(
+                    ExitError("error: only one window".into(), EXIT_RUNTIME_FAILURE).into(),
+                );
+            }
+            let order = visual_order;
+            let frames: Vec<Rect> = order.iter().map(|&i| all[i].rect).collect();
+            let current_front = accordion::detect_front(usable, accordion_padding, &frames)
+                // Not stacked yet: treat as `stack` (focused as front) then advance once.
+                .unwrap_or_else(|| order.iter().position(|&i| i == 0).unwrap_or(0));
+
+            let new_front = match direction {
+                StackAction::Next => (current_front + 1) % n,
+                StackAction::Previous => (current_front + n - 1) % n,
+            };
+            apply_accordion(&all, &order, usable, accordion_padding, new_front);
+            raise_and_activate(&all[order[new_front]]).map_err(runtime_failure)
+        }
+    }
+}
+
+/// Applies the accordion layout, best-effort — an individual unmanageable
+/// window is skipped, not fatal (same policy as `snap tile`, PRD §23).
+fn apply_accordion(
+    all: &[window::TileCandidate],
+    order: &[usize],
+    usable: Rect,
+    peek: f64,
+    front: usize,
+) {
+    let rects = accordion::accordion_rects(usable, order.len(), front, peek);
+    for (pos, &idx) in order.iter().enumerate() {
+        let _ = all[idx].window.set_rect(rects[pos]);
+    }
+}
+
+fn raise_and_activate(candidate: &window::TileCandidate) -> Result<(), anyhow::Error> {
+    candidate.window.raise()?;
+    window::activate_app(candidate.pid);
+    Ok(())
 }
 
 fn rects_roughly_equal(a: Rect, b: Rect) -> bool {

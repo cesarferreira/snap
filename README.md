@@ -285,6 +285,28 @@ window — it just moved. No wrap-around, no crossing displays. If a window
 can't be resized, the whole swap aborts and any already-applied half is
 restored on a best-effort basis.
 
+### Accordion stack
+
+A stateless accordion, AeroSpace-style: one window fills the usable bounds,
+the rest peek from the edges so you're reminded they exist:
+
+```bash
+snap stack           # apply; front = currently focused window
+snap stack next      # raise the next window in the stack, re-apply peek layout
+snap stack previous  # opposite direction (alias: prev)
+```
+
+Same candidate set as `snap tile` (current display only). Orientation is
+picked automatically from the display shape: wide/square displays peek
+left/right, tall ones peek top/bottom. `next`/`previous` detect the current
+front from live window frames — no daemon, no persisted "we are in accordion
+mode." If the windows don't currently look like a stack (you dragged one),
+`next`/`previous` apply the stack first, then advance once, so the hotkey
+always does something useful. A single window is equivalent to `snap full`;
+`stack next`/`previous` with only one window errors (`error: only one
+window`, exit 1) so a hotkey mash is noticeable. Run `snap tile` afterward
+to leave accordion mode.
+
 ### Multi-monitor
 
 Move the focused window to another display, keeping its relative position
@@ -335,6 +357,11 @@ stage_manager_width = 150
 # Extra inset, in points, `snap almost` applies beyond `padding` so a sliver
 # of desktop stays visible on every edge. Default: 48.
 almost_padding = 48
+
+# Peek strip width/height, in points, `snap stack` gives background windows.
+# Set to 0 to disable the peek (front-only; `next`/`previous` still raise).
+# Default: 30.
+accordion_padding = 30
 ```
 
 Stage Manager doesn't expose its strip width through any public API, so
@@ -379,6 +406,9 @@ modifiers = ["command", "control", "option", "shift"]
 "hyper+shift+right" = { command = "~/.cargo/bin/snap swap right" }
 "hyper+shift+up" = { command = "~/.cargo/bin/snap swap up" }
 "hyper+shift+down" = { command = "~/.cargo/bin/snap swap down" }
+"hyper+s" = { command = "~/.cargo/bin/snap stack" }
+"hyper+shift+n" = { command = "~/.cargo/bin/snap stack next" }
+"hyper+shift+p" = { command = "~/.cargo/bin/snap stack previous" }
 ```
 
 Sides omit the size so they cycle 50% → 75% → 25%. Use the absolute path:
