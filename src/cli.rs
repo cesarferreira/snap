@@ -34,9 +34,10 @@ pub enum Command {
     Center,
     /// Tile visible windows on the current display.
     Tile {
-        /// Gap between tiles, in logical points.
-        #[arg(long, default_value_t = 0.0)]
-        gap: f64,
+        /// Gap between tiles, in logical points. Defaults to the configured
+        /// padding (see `~/.config/snap.toml`).
+        #[arg(long, allow_hyphen_values = true)]
+        gap: Option<f64>,
     },
 }
 

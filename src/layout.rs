@@ -91,6 +91,22 @@ pub fn center_rect(usable: Rect, width: f64, height: f64) -> Rect {
     Rect::new(x, y, width, height)
 }
 
+/// Shrinks `usable` by `padding` on every side. Applied uniformly before any
+/// layout calculation so every command respects the configured screen-edge
+/// padding, not just `tile`. Clamped so padding can never invert the rect.
+pub fn padded(usable: Rect, padding: f64) -> Rect {
+    if padding <= 0.0 {
+        return usable;
+    }
+    let padding = padding.min(usable.width / 2.0).min(usable.height / 2.0);
+    Rect::new(
+        usable.x + padding,
+        usable.y + padding,
+        usable.width - padding * 2.0,
+        usable.height - padding * 2.0,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +251,24 @@ mod tests {
         }
         assert!(!is_supported_percent(42));
         assert!(!is_supported_percent(33));
+    }
+
+    #[test]
+    fn padded_insets_all_sides() {
+        let r = padded(SCREEN, 16.0);
+        assert_eq!(r, Rect::new(16.0, 16.0, 1696.0, 1085.0));
+    }
+
+    #[test]
+    fn padded_zero_is_noop() {
+        assert_eq!(padded(SCREEN, 0.0), SCREEN);
+    }
+
+    #[test]
+    fn padded_clamps_instead_of_inverting() {
+        let tiny = Rect::new(0.0, 0.0, 20.0, 20.0);
+        let r = padded(tiny, 1000.0);
+        assert_eq!(r.width, 0.0);
+        assert_eq!(r.height, 0.0);
     }
 }

@@ -1,5 +1,6 @@
 mod accessibility;
 mod cli;
+mod config;
 mod display;
 mod layout;
 mod tile;
@@ -12,7 +13,7 @@ use clap::Parser;
 use cli::{Cli, Command};
 use layout::{
     Rect, SUPPORTED_PERCENTS, center_rect, directional_rect, full_rect, is_supported_percent,
-    sized_rect,
+    padded, sized_rect,
 };
 
 const EXIT_SUCCESS: u8 = 0;
@@ -67,6 +68,7 @@ fn accessibility_unavailable() -> anyhow::Error {
 
 fn run(cli: Cli) -> anyhow::Result<()> {
     let action = resolve_action(&cli)?;
+    let config = config::load();
 
     if !accessibility::is_trusted() {
         accessibility::prompt_for_trust();
@@ -74,8 +76,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     match action {
-        Action::Tile { gap } => run_tile(gap),
-        Action::Reposition(compute) => run_reposition(compute),
+        Action::Tile { gap } => run_tile(gap.unwrap_or(config.padding)),
+        Action::Reposition(compute) => run_reposition(compute, config.padding),
     }
 }
 
@@ -85,7 +87,7 @@ type ComputeRect = Box<dyn Fn(Rect, Rect) -> Rect>;
 
 enum Action {
     Reposition(ComputeRect),
-    Tile { gap: f64 },
+    Tile { gap: Option<f64> },
 }
 
 fn resolve_action(cli: &Cli) -> anyhow::Result<Action> {
@@ -103,7 +105,12 @@ fn resolve_action(cli: &Cli) -> anyhow::Result<Action> {
             Command::Center => Ok(Action::Reposition(Box::new(|usable, window| {
                 center_rect(usable, window.width, window.height)
             }))),
-            Command::Tile { gap } => Ok(Action::Tile { gap: *gap }),
+            Command::Tile { gap } => {
+                if let Some(gap) = gap {
+                    validate_gap(*gap)?;
+                }
+                Ok(Action::Tile { gap: *gap })
+            }
             _ => unreachable!("directional commands handled above"),
         };
     }
@@ -120,6 +127,16 @@ fn resolve_action(cli: &Cli) -> anyhow::Result<Action> {
     ))
 }
 
+fn validate_gap(gap: f64) -> anyhow::Result<()> {
+    if gap.is_finite() && gap >= 0.0 {
+        Ok(())
+    } else {
+        Err(invalid_args(format!(
+            "error: invalid gap '{gap}'\n\ngap must be a non-negative number"
+        )))
+    }
+}
+
 fn validate_size(size: u32) -> anyhow::Result<()> {
     if is_supported_percent(size) {
         Ok(())
@@ -131,13 +148,14 @@ fn validate_size(size: u32) -> anyhow::Result<()> {
     }
 }
 
-fn run_reposition(compute: ComputeRect) -> anyhow::Result<()> {
+fn run_reposition(compute: ComputeRect, padding: f64) -> anyhow::Result<()> {
     let target = window::Window::focused()
         .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
     let window_rect = target.rect().map_err(runtime_failure)?;
     let target_display = display::target_display_for(window_rect).map_err(runtime_failure)?;
 
-    let rect = compute(target_display.usable, window_rect);
+    let usable = padded(target_display.usable, padding);
+    let rect = compute(usable, window_rect);
     target.set_rect(rect).map_err(runtime_failure)
 }
 
@@ -159,12 +177,17 @@ fn run_tile(gap: f64) -> anyhow::Result<()> {
     }];
     ordered.extend(candidates);
 
+    // The same padding value governs both the outer margin (window-to-screen-edge)
+    // and the inter-tile gap, matching how `snap left/right/top/bottom/full/center`
+    // apply it as a uniform screen-edge inset.
+    let usable = padded(target_display.usable, gap);
+
     if debug {
-        eprintln!("[snap debug] usable={:?}", target_display.usable);
+        eprintln!("[snap debug] usable={usable:?} (padding={gap})");
         eprintln!("[snap debug] {} window(s) to tile", ordered.len());
     }
 
-    let rects = tile::tile_rects(target_display.usable, ordered.len(), gap);
+    let rects = tile::tile_rects(usable, ordered.len(), gap);
     for (candidate, rect) in ordered.into_iter().zip(rects) {
         // An individual unmanageable window is skipped, not fatal (PRD §23).
         let result = candidate.window.set_rect(rect);
