@@ -12,8 +12,8 @@ use clap::Parser;
 
 use cli::{Cli, Command};
 use layout::{
-    Rect, SUPPORTED_PERCENTS, center_rect, directional_rect, full_rect, is_supported_percent,
-    padded, sized_rect,
+    Rect, SUPPORTED_PERCENTS, center_rect, detect_centered_percent, detect_directional_percent,
+    directional_rect, full_rect, is_supported_percent, next_cycle_percent, padded, sized_rect,
 };
 
 const EXIT_SUCCESS: u8 = 0;
@@ -95,10 +95,19 @@ enum Action {
 fn resolve_action(cli: &Cli) -> anyhow::Result<Action> {
     if let Some(command) = &cli.command {
         if let Some((position, size)) = command.as_position_and_size() {
-            validate_size(size)?;
-            return Ok(Action::Reposition(Box::new(move |usable, _window| {
-                directional_rect(usable, position, size)
-            })));
+            return match size {
+                Some(size) => {
+                    validate_size(size)?;
+                    Ok(Action::Reposition(Box::new(move |usable, _window| {
+                        directional_rect(usable, position, size)
+                    })))
+                }
+                // No SIZE given — cycle 25/50/75% based on the window's current geometry.
+                None => Ok(Action::Reposition(Box::new(move |usable, window| {
+                    let current = detect_directional_percent(usable, position, window);
+                    directional_rect(usable, position, next_cycle_percent(current))
+                }))),
+            };
         }
         return match command {
             Command::Full => Ok(Action::Reposition(Box::new(|usable, _window| {
@@ -124,9 +133,11 @@ fn resolve_action(cli: &Cli) -> anyhow::Result<Action> {
         })));
     }
 
-    Err(invalid_args(
-        "error: no command given\n\nrun `snap --help` for usage",
-    ))
+    // Bare `snap` with no size — cycle 25/50/75% based on the window's current geometry.
+    Ok(Action::Reposition(Box::new(|usable, window| {
+        let current = detect_centered_percent(usable, window);
+        sized_rect(usable, next_cycle_percent(current))
+    })))
 }
 
 fn validate_gap(gap: f64) -> anyhow::Result<()> {

@@ -91,6 +91,52 @@ pub fn center_rect(usable: Rect, width: f64, height: f64) -> Rect {
     Rect::new(x, y, width, height)
 }
 
+/// Sizes cycled through when a size is omitted (e.g. `snap left` with no
+/// percent) — repeated invocations step 25% → 50% → 75% → 25% → ..., like
+/// Rectangle's cycling. Deliberately excludes 100/full, which stays an
+/// explicit-only command.
+pub const CYCLE_PERCENTS: [u32; 3] = [25, 50, 75];
+
+/// The percent to apply next in the cycle. `current` is the step the window
+/// is presently at (from [`detect_directional_percent`] /
+/// [`detect_centered_percent`]), or `None` if it doesn't match any step —
+/// in which case the cycle (re)starts from the first size. This makes
+/// cycling stateless: each invocation derives "where we are" from the
+/// window's live geometry rather than remembering prior invocations.
+pub fn next_cycle_percent(current: Option<u32>) -> u32 {
+    match current.and_then(|p| CYCLE_PERCENTS.iter().position(|&step| step == p)) {
+        Some(i) => CYCLE_PERCENTS[(i + 1) % CYCLE_PERCENTS.len()],
+        None => CYCLE_PERCENTS[0],
+    }
+}
+
+/// Generous on purpose: apps that snap their size to a grid (terminal
+/// emulators snapping to character cells, editors snapping to a column
+/// width) commonly land a few points off an exact request (PRD §23). Cycle
+/// steps are hundreds of points apart, so this can't be confused for a
+/// neighboring step.
+fn rects_match(a: Rect, b: Rect) -> bool {
+    const EPS: f64 = 20.0;
+    (a.x - b.x).abs() < EPS
+        && (a.y - b.y).abs() < EPS
+        && (a.width - b.width).abs() < EPS
+        && (a.height - b.height).abs() < EPS
+}
+
+/// Which cycle step `window` currently matches for `position`, if any.
+pub fn detect_directional_percent(usable: Rect, position: Position, window: Rect) -> Option<u32> {
+    CYCLE_PERCENTS
+        .into_iter()
+        .find(|&p| rects_match(directional_rect(usable, position, p), window))
+}
+
+/// Which cycle step `window` currently matches for the centered layout, if any.
+pub fn detect_centered_percent(usable: Rect, window: Rect) -> Option<u32> {
+    CYCLE_PERCENTS
+        .into_iter()
+        .find(|&p| rects_match(sized_rect(usable, p), window))
+}
+
 /// Shrinks `usable` by `padding` on every side. Applied uniformly before any
 /// layout calculation so every command respects the configured screen-edge
 /// padding, not just `tile`. Clamped so padding can never invert the rect.
@@ -270,5 +316,65 @@ mod tests {
         let r = padded(tiny, 1000.0);
         assert_eq!(r.width, 0.0);
         assert_eq!(r.height, 0.0);
+    }
+
+    #[test]
+    fn cycle_advances_through_25_50_75_and_wraps() {
+        assert_eq!(next_cycle_percent(Some(25)), 50);
+        assert_eq!(next_cycle_percent(Some(50)), 75);
+        assert_eq!(next_cycle_percent(Some(75)), 25);
+    }
+
+    #[test]
+    fn cycle_starts_at_25_when_no_match() {
+        assert_eq!(next_cycle_percent(None), 25);
+        assert_eq!(next_cycle_percent(Some(33)), 25);
+        assert_eq!(next_cycle_percent(Some(100)), 25);
+    }
+
+    #[test]
+    fn detect_directional_percent_matches_current_step() {
+        let window = directional_rect(SCREEN, Position::Left, 50);
+        assert_eq!(
+            detect_directional_percent(SCREEN, Position::Left, window),
+            Some(50)
+        );
+    }
+
+    #[test]
+    fn detect_directional_percent_none_when_unrelated_rect() {
+        let window = Rect::new(200.0, 200.0, 300.0, 300.0);
+        assert_eq!(
+            detect_directional_percent(SCREEN, Position::Left, window),
+            None
+        );
+    }
+
+    #[test]
+    fn detect_directional_percent_ignores_other_positions() {
+        let left_50 = directional_rect(SCREEN, Position::Left, 50);
+        assert_eq!(
+            detect_directional_percent(SCREEN, Position::Right, left_50),
+            None
+        );
+    }
+
+    #[test]
+    fn detect_centered_percent_matches_current_step() {
+        let window = sized_rect(SCREEN, 75);
+        assert_eq!(detect_centered_percent(SCREEN, window), Some(75));
+    }
+
+    #[test]
+    fn full_directional_cycle_reaches_every_step_in_order() {
+        let mut window = Rect::new(999.0, 999.0, 999.0, 999.0); // no match, starts fresh
+        let mut steps = Vec::new();
+        for _ in 0..6 {
+            let current = detect_directional_percent(SCREEN, Position::Left, window);
+            let next = next_cycle_percent(current);
+            steps.push(next);
+            window = directional_rect(SCREEN, Position::Left, next);
+        }
+        assert_eq!(steps, vec![25, 50, 75, 25, 50, 75]);
     }
 }

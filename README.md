@@ -113,6 +113,17 @@ snap 75
 snap 100   # same as `snap full`
 ```
 
+Omit the percentage to **cycle** 25% → 50% → 75% → 25% → ... each time you
+run it, like Rectangle:
+
+```bash
+snap
+```
+
+Cycling is stateless — snap looks at the window's *current* size to figure
+out which step to apply next, so it works correctly no matter what ran it
+last, and there's nothing to remember between invocations.
+
 ### Positioning
 
 Anchor the focused window to a side, sized to 25/50/75% of the screen:
@@ -122,6 +133,12 @@ snap left 50
 snap right 50
 snap top 50
 snap bottom 50
+```
+
+Omit the size to cycle the same way, per side:
+
+```bash
+snap left    # 25% → 50% → 75% → 25% → ...
 ```
 
 ### Commands

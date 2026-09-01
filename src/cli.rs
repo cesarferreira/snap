@@ -14,20 +14,21 @@ pub struct Cli {
     pub command: Option<Command>,
 
     /// `snap <percent>` — resize the focused window, keeping it centered.
+    /// Omit entirely to cycle through 25/50/75%.
     #[arg(value_name = "SIZE")]
     pub size: Option<u32>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Anchor the focused window to the left, sized to <SIZE>% of the screen.
-    Left { size: u32 },
-    /// Anchor the focused window to the right, sized to <SIZE>% of the screen.
-    Right { size: u32 },
-    /// Anchor the focused window to the top, sized to <SIZE>% of the screen.
-    Top { size: u32 },
-    /// Anchor the focused window to the bottom, sized to <SIZE>% of the screen.
-    Bottom { size: u32 },
+    /// Anchor the focused window to the left. Omit SIZE to cycle 25/50/75%.
+    Left { size: Option<u32> },
+    /// Anchor the focused window to the right. Omit SIZE to cycle 25/50/75%.
+    Right { size: Option<u32> },
+    /// Anchor the focused window to the top. Omit SIZE to cycle 25/50/75%.
+    Top { size: Option<u32> },
+    /// Anchor the focused window to the bottom. Omit SIZE to cycle 25/50/75%.
+    Bottom { size: Option<u32> },
     /// Fill the usable bounds of the current display.
     Full,
     /// Center the focused window without changing its size.
@@ -42,7 +43,7 @@ pub enum Command {
 }
 
 impl Command {
-    pub fn as_position_and_size(&self) -> Option<(Position, u32)> {
+    pub fn as_position_and_size(&self) -> Option<(Position, Option<u32>)> {
         match self {
             Command::Left { size } => Some((Position::Left, *size)),
             Command::Right { size } => Some((Position::Right, *size)),
