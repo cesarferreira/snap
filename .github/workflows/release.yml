@@ -19,17 +19,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # macOS only (PRD §4, §26): snap links ApplicationServices/CoreGraphics/
+        # Cocoa frameworks directly and has no meaning on other platforms.
         include:
           - target: x86_64-apple-darwin
             os: macos-15
           - target: aarch64-apple-darwin
             os: macos-15
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
 
     steps:
       - uses: actions/checkout@v6
@@ -47,18 +43,11 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package (Unix)
-        if: matrix.target != 'x86_64-pc-windows-msvc'
+      - name: Package
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../snap-${{ matrix.target }}.tar.gz snap
           cd ../../..
-
-      - name: Package (Windows)
-        if: matrix.target == 'x86_64-pc-windows-msvc'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path "target/${{ matrix.target }}/release/snap.exe" -DestinationPath "snap-${{ matrix.target }}.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7

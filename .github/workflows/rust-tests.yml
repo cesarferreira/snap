@@ -18,7 +18,9 @@ env:
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-latest
+    # snap is macOS-only (links ApplicationServices/CoreGraphics/Cocoa
+    # frameworks directly), so it can't build on ubuntu-latest.
+    runs-on: macos-15
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
