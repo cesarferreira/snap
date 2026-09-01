@@ -53,13 +53,24 @@ layout tree. It just puts your windows where you want them.
 
 ## Install
 
-Requires [Rust](https://rustup.rs) **1.85+** and `~/.cargo/bin` on your `PATH`.
+**Homebrew** (no Rust toolchain needed):
+
+```bash
+brew install cesarferreira/tap/snap
+```
+
+Installs the `snap` binary (not `snap-macos` — that's just the crates.io
+name, since `snap` was taken there too). kiwi still needs the **absolute
+path** to the binary: `$(brew --prefix)/bin/snap`.
+
+**cargo**, if you already have a Rust toolchain (**1.85+**, with
+`~/.cargo/bin` on your `PATH`):
 
 ```bash
 cargo install snap-macos   # installs the `snap` binary
 ```
 
-Verify:
+Verify either install:
 
 ```bash
 snap --help
