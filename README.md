@@ -2,12 +2,16 @@
   <h1>snap 🫰</h1>
 
   <p><strong>Window management from the terminal.</strong></p>
+</div>
 
-  <pre align="left">
-$ snap left      # cycle left 50% / left 75% / left 25%
-$ snap           # cycle 50% / 75% / 25%, centered
-$ snap full      # fill the current display
-$ snap tile      # tile visible windows</pre>
+```bash
+snap left      # cycle left 50% / left 75% / left 25%
+snap           # cycle 50% / 75% / 25%, centered
+snap full      # fill the current display
+snap tile      # tile visible windows
+```
+
+<div align="center">
 
   <p><strong>No daemon. No GUI. No config required.</strong></p>
 
