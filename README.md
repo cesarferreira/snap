@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>snap</h1>
+  <h1>snap 🫰</h1>
 
   <p><strong>Window management from the terminal.</strong></p>
 
