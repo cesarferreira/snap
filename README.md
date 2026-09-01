@@ -196,24 +196,34 @@ on your display.
 <a id="keyboard-shortcuts"></a>
 ## Keyboard shortcuts
 
-snap doesn't register global hotkeys itself — pair it with whatever you
-already use:
+snap doesn't register global hotkeys itself. The supported pairing is
+**[kiwi](https://github.com/cesarferreira/kiwi)** — a small native daemon that
+maps chords to commands from one TOML file. No Karabiner, no Raycast, no
+menu-bar app.
 
-- [Raycast](https://raycast.com)
-- [Karabiner-Elements](https://karabiner-elements.pqrs.org)
-- [skhd](https://github.com/koekeishiya/skhd)
-- [BetterTouchTool](https://folivora.ai)
-- macOS Shortcuts
+```toml
+# ~/.config/kiwi/config.toml
+[hyper]
+key = "caps_lock"
+tap = "escape"
+modifiers = ["command", "control", "option", "shift"]
 
+[bindings]
+"hyper+f" = { command = "~/.cargo/bin/snap tile" }
+"left_option+command+left" = { command = "~/.cargo/bin/snap left" }
+"left_option+command+right" = { command = "~/.cargo/bin/snap right" }
+"left_option+command+up" = { command = "~/.cargo/bin/snap top" }
+"left_option+command+down" = { command = "~/.cargo/bin/snap bottom" }
 ```
-ctrl + alt + left     → snap left 50
-ctrl + alt + right    → snap right 50
-ctrl + alt + 1        → snap 25
-ctrl + alt + 2        → snap 50
-ctrl + alt + 3        → snap 75
-ctrl + alt + enter    → snap full
-ctrl + alt + t        → snap tile
-```
+
+Sides omit the size so they cycle 50% → 75% → 25%. Use the absolute path:
+kiwi's LaunchAgent has a minimal `PATH`, so a bare `snap` will not resolve.
+After saving, kiwi reloads the config on its own.
+
+If you already have a launcher, bind the same `snap` commands there instead
+([Raycast](https://raycast.com), [Karabiner-Elements](https://karabiner-elements.pqrs.org),
+[skhd](https://github.com/koekeishiya/skhd), [BetterTouchTool](https://folivora.ai),
+macOS Shortcuts).
 
 
 
