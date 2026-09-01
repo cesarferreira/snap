@@ -29,6 +29,18 @@ pub enum Command {
     Top { size: Option<u32> },
     /// Anchor the focused window to the bottom. Omit SIZE to cycle 25/50/75%.
     Bottom { size: Option<u32> },
+    /// Anchor the focused window to the top-left corner. Omit SIZE to cycle 25/50/75%.
+    #[command(name = "top-left")]
+    TopLeft { size: Option<u32> },
+    /// Anchor the focused window to the top-right corner. Omit SIZE to cycle 25/50/75%.
+    #[command(name = "top-right")]
+    TopRight { size: Option<u32> },
+    /// Anchor the focused window to the bottom-left corner. Omit SIZE to cycle 25/50/75%.
+    #[command(name = "bottom-left")]
+    BottomLeft { size: Option<u32> },
+    /// Anchor the focused window to the bottom-right corner. Omit SIZE to cycle 25/50/75%.
+    #[command(name = "bottom-right")]
+    BottomRight { size: Option<u32> },
     /// Fill the usable bounds of the current display.
     Full,
     /// Center the focused window without changing its size.
@@ -66,6 +78,10 @@ impl Command {
             Command::Right { size } => Some((Position::Right, *size)),
             Command::Top { size } => Some((Position::Top, *size)),
             Command::Bottom { size } => Some((Position::Bottom, *size)),
+            Command::TopLeft { size } => Some((Position::TopLeft, *size)),
+            Command::TopRight { size } => Some((Position::TopRight, *size)),
+            Command::BottomLeft { size } => Some((Position::BottomLeft, *size)),
+            Command::BottomRight { size } => Some((Position::BottomRight, *size)),
             _ => None,
         }
     }

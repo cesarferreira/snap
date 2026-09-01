@@ -26,6 +26,10 @@ pub enum Position {
     Right,
     Top,
     Bottom,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
 }
 
 /// Any integer percent in this (inclusive) range is a valid explicit size
@@ -53,7 +57,9 @@ pub fn sized_rect(usable: Rect, percent: u32) -> Rect {
     center_rect(usable, width, height)
 }
 
-/// `snap left|right|top|bottom <percent>` (PRD §9).
+/// `snap left|right|top|bottom <percent>` (PRD §9) and the four corner
+/// anchors: a corner occupies `percent%` of usable **width and height**,
+/// anchored to that corner, rather than a full-height/width strip.
 pub fn directional_rect(usable: Rect, position: Position, percent: u32) -> Rect {
     let f = fraction(percent);
     match position {
@@ -74,6 +80,35 @@ pub fn directional_rect(usable: Rect, position: Position, percent: u32) -> Rect 
                 usable.x,
                 usable.y + usable.height - height,
                 usable.width,
+                height,
+            )
+        }
+        Position::TopLeft => Rect::new(usable.x, usable.y, usable.width * f, usable.height * f),
+        Position::TopRight => {
+            let width = usable.width * f;
+            Rect::new(
+                usable.x + usable.width - width,
+                usable.y,
+                width,
+                usable.height * f,
+            )
+        }
+        Position::BottomLeft => {
+            let height = usable.height * f;
+            Rect::new(
+                usable.x,
+                usable.y + usable.height - height,
+                usable.width * f,
+                height,
+            )
+        }
+        Position::BottomRight => {
+            let width = usable.width * f;
+            let height = usable.height * f;
+            Rect::new(
+                usable.x + usable.width - width,
+                usable.y + usable.height - height,
+                width,
                 height,
             )
         }
@@ -360,6 +395,73 @@ mod tests {
         let screen = Rect::new(0.0, 0.0, 3440.0, 1440.0);
         let r = directional_rect(screen, Position::Left, 50);
         assert_eq!(r, Rect::new(0.0, 0.0, 1720.0, 1440.0));
+    }
+
+    #[test]
+    fn top_left_occupies_that_corner() {
+        for percent in [25, 50, 75] {
+            let r = directional_rect(SCREEN, Position::TopLeft, percent);
+            let f = percent as f64 / 100.0;
+            assert_eq!(r, Rect::new(0.0, 0.0, 1728.0 * f, 1117.0 * f));
+        }
+    }
+
+    #[test]
+    fn top_right_occupies_that_corner() {
+        let r = directional_rect(SCREEN, Position::TopRight, 50);
+        assert_eq!(r, Rect::new(864.0, 0.0, 864.0, 558.5));
+    }
+
+    #[test]
+    fn bottom_left_occupies_that_corner() {
+        let r = directional_rect(SCREEN, Position::BottomLeft, 50);
+        assert_eq!(r, Rect::new(0.0, 558.5, 864.0, 558.5));
+    }
+
+    #[test]
+    fn bottom_right_occupies_that_corner() {
+        let r = directional_rect(SCREEN, Position::BottomRight, 50);
+        assert_eq!(r, Rect::new(864.0, 558.5, 864.0, 558.5));
+    }
+
+    #[test]
+    fn corner_at_100_percent_equals_full() {
+        for corner in [
+            Position::TopLeft,
+            Position::TopRight,
+            Position::BottomLeft,
+            Position::BottomRight,
+        ] {
+            assert_eq!(directional_rect(SCREEN, corner, 100), full_rect(SCREEN));
+        }
+    }
+
+    #[test]
+    fn corners_respect_padding_and_non_origin_display() {
+        let display = Rect::new(1728.0, 100.0, 1920.0, 1080.0);
+        let usable = padded(display, 16.0);
+        let r = directional_rect(usable, Position::TopLeft, 50);
+        assert_eq!(r.x, usable.x);
+        assert_eq!(r.y, usable.y);
+        assert_eq!(r.width, usable.width * 0.5);
+        assert_eq!(r.height, usable.height * 0.5);
+    }
+
+    #[test]
+    fn corner_cycle_is_independent_and_stateless_per_corner() {
+        let top_left_50 = directional_rect(SCREEN, Position::TopLeft, 50);
+        // A top-left-50% window is not mistaken for a left-50% strip.
+        assert_eq!(
+            detect_directional_percent(SCREEN, Position::Left, top_left_50),
+            None
+        );
+        assert_eq!(
+            detect_directional_percent(SCREEN, Position::TopLeft, top_left_50),
+            Some(50)
+        );
+
+        let current = detect_directional_percent(SCREEN, Position::TopLeft, top_left_50);
+        assert_eq!(next_cycle_percent(current), 75);
     }
 
     #[test]

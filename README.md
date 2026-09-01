@@ -150,6 +150,22 @@ if the window doesn't match one of the cycle steps, the first press snaps to
 snap left    # 50% → 75% → 25% → 50% → ...
 ```
 
+### Corners
+
+Anchor the focused window to a corner, occupying that percent of usable
+**width and height** (not a full-height/width strip):
+
+```bash
+snap top-left 50
+snap top-right 50
+snap bottom-left 50
+snap bottom-right 50
+```
+
+Omit the size to cycle 50/75/25%, independently per corner (a `top-left 50%`
+window is never mistaken for a `left 50%` strip). `snap top-left 100` fills
+the usable area, same as `snap full`.
+
 ### Commands
 
 ```bash
@@ -241,6 +257,10 @@ modifiers = ["command", "control", "option", "shift"]
 "left_option+command+up" = { command = "~/.cargo/bin/snap top" }
 "left_option+command+down" = { command = "~/.cargo/bin/snap bottom" }
 "hyper+n" = { command = "~/.cargo/bin/snap display next" }
+"hyper+u" = { command = "~/.cargo/bin/snap top-left" }
+"hyper+i" = { command = "~/.cargo/bin/snap top-right" }
+"hyper+j" = { command = "~/.cargo/bin/snap bottom-left" }
+"hyper+k" = { command = "~/.cargo/bin/snap bottom-right" }
 ```
 
 Sides omit the size so they cycle 50% → 75% → 25%. Use the absolute path:
