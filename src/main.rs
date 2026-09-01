@@ -822,8 +822,16 @@ fn raise_and_activate(candidate: &window::TileCandidate) -> Result<(), anyhow::E
     Ok(())
 }
 
+/// Used to match a window's own `Window::rect()` (Accessibility) reading
+/// against its `TileCandidate::rect` (CGWindowList) reading for the same
+/// window — e.g. excluding the focused window from `tile`/`focus`/`swap`
+/// candidates, or looking up its `window_number` for `undo`. `EPS` matches
+/// `window::rects_roughly_equal`'s tolerance for that exact cross-source
+/// comparison (AX and CG occasionally disagree by a point or two); `1.0`
+/// was too tight and could miss the match, leaving the focused window in
+/// its own candidate set or `undo` unable to find its identity.
 fn rects_roughly_equal(a: Rect, b: Rect) -> bool {
-    const EPS: f64 = 1.0;
+    const EPS: f64 = 2.0;
     (a.x - b.x).abs() < EPS
         && (a.y - b.y).abs() < EPS
         && (a.width - b.width).abs() < EPS
