@@ -108,6 +108,9 @@ pub enum Command {
         #[arg(value_name = "ACTION", value_parser = parse_stack_action)]
         action: Option<StackAction>,
     },
+    /// Restore the focused window to its previous frame (toggles: a second
+    /// `undo` returns to where the first one started).
+    Undo,
     /// Move the focused window to another display, preserving its relative
     /// position and size.
     Display {

@@ -228,6 +228,24 @@ stops at the usable bounds. Both are stateless and repeatable.
 [Configuration](#configuration)), so a sliver of desktop stays visible on
 every edge. It never invokes native fullscreen.
 
+### Undo
+
+```bash
+snap undo
+```
+
+Restores the focused window to its frame from before the last mutation that
+touched it. A second `snap undo` toggles back — undo/redo as a swap, no
+stack. This is the one place snap keeps on-disk state: a flat
+`window_number → previous frame` cache at
+`~/Library/Caches/snap/last-frames.json`, written after every successful
+mutation (`left`/`right`/.../`tile`/`display`/...; never for failed
+commands, and `list`/`doctor` don't count). Entries older than 24h are
+pruned. If nothing is recorded for the focused window — including right
+after `snap tile`, where undo restores only that one window, not the whole
+tiled group — `error: nothing to undo`, exit 1. If the cache can't be
+written, mutations still succeed; only undo may fail.
+
 ### Targeting a window by app name
 
 By default every command acts on the focused window. `--app NAME` targets a
@@ -431,6 +449,7 @@ modifiers = ["command", "control", "option", "shift"]
 "hyper+shift+n" = { command = "~/.cargo/bin/snap stack next" }
 "hyper+shift+p" = { command = "~/.cargo/bin/snap stack previous" }
 "hyper+g" = { command = "~/.cargo/bin/snap --app Ghostty full" }
+"hyper+z" = { command = "~/.cargo/bin/snap undo" }
 ```
 
 Sides omit the size so they cycle 50% → 75% → 25%. Use the absolute path:

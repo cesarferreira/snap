@@ -6,6 +6,7 @@ mod display;
 mod layout;
 mod spatial;
 mod tile;
+mod undo;
 mod window;
 
 use std::process::ExitCode;
@@ -103,6 +104,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             config.stage_manager_width,
             config.accordion_padding,
         ),
+        Action::Undo => run_undo(config.stage_manager_width),
     }
 }
 
@@ -121,6 +123,7 @@ enum Action {
     Focus(Direction),
     Swap(Direction),
     Stack(Option<StackAction>),
+    Undo,
 }
 
 fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> {
@@ -178,6 +181,7 @@ fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> 
             Command::Focus { direction } => Ok(Action::Focus(*direction)),
             Command::Swap { direction } => Ok(Action::Swap(*direction)),
             Command::Stack { action } => Ok(Action::Stack(*action)),
+            Command::Undo => Ok(Action::Undo),
             Command::Third { position } => match position {
                 Some(third) => {
                     let third = *third;
@@ -230,21 +234,35 @@ fn validate_size(size: u32) -> anyhow::Result<()> {
 
 /// Resolves the window a mutate command should act on: the focused window
 /// by default, or the window matching `--app NAME` when given.
+/// Resolves the target window plus its `kCGWindowNumber`, when it can be
+/// determined, for the caller to hand to [`undo::record`] after a
+/// successful mutation. `None` (rather than failing the command) when the
+/// window can't be matched back to a CGWindowList entry — undo just won't
+/// work for that one mutation.
 fn resolve_target(
     app: Option<&str>,
     stage_manager_width: f64,
-) -> anyhow::Result<(window::Window, Rect)> {
+) -> anyhow::Result<(window::Window, Rect, Option<i64>)> {
     match app {
         None => {
             let window = window::Window::focused()
                 .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
             let rect = window.rect().map_err(runtime_failure)?;
-            Ok((window, rect))
+            let window_number = display::target_display_for(rect, stage_manager_width)
+                .ok()
+                .and_then(|d| window::visible_windows_on(d.frame).ok())
+                .and_then(|candidates| {
+                    candidates
+                        .iter()
+                        .find(|c| rects_roughly_equal(c.rect, rect))
+                        .map(|c| c.window_number)
+                });
+            Ok((window, rect, window_number))
         }
         Some(name) => {
             let candidate = find_app_window(name, stage_manager_width)?;
             let rect = candidate.rect;
-            Ok((candidate.window, rect))
+            Ok((candidate.window, rect, Some(candidate.window_number)))
         }
     }
 }
@@ -327,7 +345,7 @@ fn run_reposition(
     stage_manager_width: f64,
     app: Option<&str>,
 ) -> anyhow::Result<()> {
-    let (target, window_rect) = resolve_target(app, stage_manager_width)?;
+    let (target, window_rect, window_number) = resolve_target(app, stage_manager_width)?;
     let target_display =
         display::target_display_for(window_rect, stage_manager_width).map_err(runtime_failure)?;
 
@@ -339,7 +357,11 @@ fn run_reposition(
             target_display.usable
         );
     }
-    target.set_rect(rect).map_err(runtime_failure)
+    target.set_rect(rect).map_err(runtime_failure)?;
+    if let Some(window_number) = window_number {
+        undo::record(window_number, window_rect);
+    }
+    Ok(())
 }
 
 fn run_display_move(
@@ -348,7 +370,7 @@ fn run_display_move(
     stage_manager_width: f64,
     app: Option<&str>,
 ) -> anyhow::Result<()> {
-    let (focused, window_rect) = resolve_target(app, stage_manager_width)?;
+    let (focused, window_rect, window_number) = resolve_target(app, stage_manager_width)?;
 
     let displays = display::ordered_displays(stage_manager_width).map_err(runtime_failure)?;
     if displays.len() == 1 && matches!(target, DisplayTarget::Next | DisplayTarget::Previous) {
@@ -367,7 +389,32 @@ fn run_display_move(
     let from_usable = padded(displays[current_index].usable, padding);
     let to_usable = padded(displays[dest_index].usable, padding);
     let new_rect = map_rect_between_displays(window_rect, from_usable, to_usable);
-    focused.set_rect(new_rect).map_err(runtime_failure)
+    focused.set_rect(new_rect).map_err(runtime_failure)?;
+    if let Some(window_number) = window_number {
+        undo::record(window_number, window_rect);
+    }
+    Ok(())
+}
+
+/// `snap undo` — restores the focused window to its previously recorded
+/// frame, then swaps the cache entry so a second `undo` toggles back.
+fn run_undo(stage_manager_width: f64) -> anyhow::Result<()> {
+    let focused = window::Window::focused()
+        .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
+    let current_rect = focused.rect().map_err(runtime_failure)?;
+    let target_display =
+        display::target_display_for(current_rect, stage_manager_width).map_err(runtime_failure)?;
+
+    let candidates = window::visible_windows_on(target_display.frame).map_err(runtime_failure)?;
+    let window_number = candidates
+        .iter()
+        .find(|c| rects_roughly_equal(c.rect, current_rect))
+        .map(|c| c.window_number)
+        .ok_or_else(|| ExitError("error: nothing to undo".into(), EXIT_RUNTIME_FAILURE))?;
+
+    let previous = undo::take_and_swap(window_number, current_rect)
+        .ok_or_else(|| ExitError("error: nothing to undo".into(), EXIT_RUNTIME_FAILURE))?;
+    focused.set_rect(previous).map_err(runtime_failure)
 }
 
 fn run_tile(gap: f64, stage_manager_width: f64, layout: TileLayout) -> anyhow::Result<()> {
@@ -415,7 +462,11 @@ fn run_tile(gap: f64, stage_manager_width: f64, layout: TileLayout) -> anyhow::R
     let rects = tile::tile_rects_with_layout(usable, ordered.len(), gap, layout);
     for (candidate, rect) in ordered.into_iter().zip(rects) {
         // An individual unmanageable window is skipped, not fatal (PRD §23).
+        let previous_rect = candidate.rect;
         let result = candidate.window.set_rect(rect);
+        if result.is_ok() && candidate.window_number >= 0 {
+            undo::record(candidate.window_number, previous_rect);
+        }
         if debug {
             let after = candidate.window.rect();
             eprintln!("[snap debug] requested={rect:?} set_rect={result:?} actual_after={after:?}");
