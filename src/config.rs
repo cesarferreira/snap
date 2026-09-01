@@ -13,6 +13,9 @@ pub struct Config {
     /// when Stage Manager is enabled, so windows don't cover its strip.
     /// `0` disables the reservation even if Stage Manager is on.
     pub stage_manager_width: f64,
+    /// Extra inset, in logical points, `snap almost` applies beyond `padding`
+    /// so the desktop stays visible around the edges.
+    pub almost_padding: f64,
 }
 
 impl Default for Config {
@@ -20,6 +23,7 @@ impl Default for Config {
         Config {
             padding: 16.0,
             stage_manager_width: 150.0,
+            almost_padding: 48.0,
         }
     }
 }
@@ -62,6 +66,11 @@ fn parse(contents: &str) -> Config {
             "stage_manager_width" => {
                 if let Ok(width) = value.parse::<f64>() {
                     config.stage_manager_width = width;
+                }
+            }
+            "almost_padding" => {
+                if let Ok(padding) = value.parse::<f64>() {
+                    config.almost_padding = padding;
                 }
             }
             _ => {}
@@ -114,5 +123,10 @@ mod tests {
             parse("stage_manager_width = 200").stage_manager_width,
             200.0
         );
+    }
+
+    #[test]
+    fn overrides_almost_padding() {
+        assert_eq!(parse("almost_padding = 64").almost_padding, 64.0);
     }
 }

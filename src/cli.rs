@@ -43,6 +43,13 @@ pub enum Command {
     BottomRight { size: Option<u32> },
     /// Fill the usable bounds of the current display.
     Full,
+    /// Increase the focused window's size toward the usable bounds.
+    Grow,
+    /// Decrease the focused window's size toward a minimum.
+    Shrink,
+    /// Fill the usable area minus an extra inset (`almost_padding`), leaving
+    /// the desktop edges visible. Not native fullscreen.
+    Almost,
     /// Center the focused window without changing its size.
     Center,
     /// Tile visible windows on the current display.

@@ -221,6 +221,69 @@ pub fn next_third(current: Option<Third>) -> Third {
     }
 }
 
+/// Fraction of usable width/height added or removed per `snap grow`/`shrink`
+/// invocation, so repeated presses reach `usable` bounds in a predictable
+/// number of hits.
+const RESIZE_STEP_FRACTION: f64 = 0.10;
+
+/// Neither `grow` nor `shrink` will make a window smaller than this fraction
+/// of usable width/height.
+const MIN_SIZE_FRACTION: f64 = 0.10;
+
+/// `snap grow` — scales `window` up toward `usable` bounds, keeping any edge
+/// already flush with a usable edge (within tolerance) fixed in place;
+/// otherwise scales about the window's current center.
+pub fn grow_rect(usable: Rect, window: Rect) -> Rect {
+    nudge_rect(usable, window, RESIZE_STEP_FRACTION)
+}
+
+/// `snap shrink` — the inverse of [`grow_rect`], never smaller than
+/// [`MIN_SIZE_FRACTION`] of usable width/height.
+pub fn shrink_rect(usable: Rect, window: Rect) -> Rect {
+    nudge_rect(usable, window, -RESIZE_STEP_FRACTION)
+}
+
+fn nudge_rect(usable: Rect, window: Rect, delta_fraction: f64) -> Rect {
+    const EDGE_EPS: f64 = 2.0;
+    let min_width = usable.width * MIN_SIZE_FRACTION;
+    let min_height = usable.height * MIN_SIZE_FRACTION;
+
+    let new_width = (window.width + usable.width * delta_fraction).clamp(min_width, usable.width);
+    let new_height =
+        (window.height + usable.height * delta_fraction).clamp(min_height, usable.height);
+
+    let left_flush = (window.x - usable.x).abs() < EDGE_EPS;
+    let right_flush = ((window.x + window.width) - (usable.x + usable.width)).abs() < EDGE_EPS;
+    let top_flush = (window.y - usable.y).abs() < EDGE_EPS;
+    let bottom_flush = ((window.y + window.height) - (usable.y + usable.height)).abs() < EDGE_EPS;
+
+    let x = if left_flush && !right_flush {
+        window.x
+    } else if right_flush && !left_flush {
+        window.x + window.width - new_width
+    } else {
+        window.x + (window.width - new_width) / 2.0
+    };
+    let y = if top_flush && !bottom_flush {
+        window.y
+    } else if bottom_flush && !top_flush {
+        window.y + window.height - new_height
+    } else {
+        window.y + (window.height - new_height) / 2.0
+    };
+
+    let x = x.clamp(usable.x, usable.x + usable.width - new_width);
+    let y = y.clamp(usable.y, usable.y + usable.height - new_height);
+    Rect::new(x, y, new_width, new_height)
+}
+
+/// `snap almost` — like [`full_rect`] but inset further by `almost_padding`
+/// beyond the already-padded `usable` bounds, so the desktop edges stay
+/// visible. Never native fullscreen.
+pub fn almost_rect(usable: Rect, almost_padding: f64) -> Rect {
+    padded(usable, almost_padding)
+}
+
 /// Target for `snap display next|previous|N`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayTarget {
@@ -504,6 +567,80 @@ mod tests {
 
         let current = detect_directional_percent(SCREEN, Position::TopLeft, top_left_50);
         assert_eq!(next_cycle_percent(current), 75);
+    }
+
+    #[test]
+    fn grow_scales_up_about_center_when_not_flush() {
+        let window = Rect::new(500.0, 400.0, 400.0, 300.0); // centered-ish, not flush
+        let r = grow_rect(SCREEN, window);
+        assert_eq!(r.width, 400.0 + SCREEN.width * 0.10);
+        assert_eq!(r.height, 300.0 + SCREEN.height * 0.10);
+        // Center stays the same.
+        assert!((r.x + r.width / 2.0 - (window.x + window.width / 2.0)).abs() < 1e-6);
+        assert!((r.y + r.height / 2.0 - (window.y + window.height / 2.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn grow_keeps_left_edge_flush_after_a_left_snap() {
+        let window = directional_rect(SCREEN, Position::Left, 50);
+        let r = grow_rect(SCREEN, window);
+        assert_eq!(r.x, SCREEN.x);
+        assert!(r.width > window.width);
+    }
+
+    #[test]
+    fn grow_keeps_right_edge_flush_after_a_right_snap() {
+        let window = directional_rect(SCREEN, Position::Right, 50);
+        let r = grow_rect(SCREEN, window);
+        assert_eq!(r.x + r.width, SCREEN.x + SCREEN.width);
+    }
+
+    #[test]
+    fn grow_clamps_to_usable_bounds() {
+        let window = Rect::new(0.0, 0.0, SCREEN.width * 0.98, SCREEN.height * 0.98);
+        let r = grow_rect(SCREEN, window);
+        assert!(r.width <= SCREEN.width);
+        assert!(r.height <= SCREEN.height);
+    }
+
+    #[test]
+    fn shrink_scales_down_and_stops_at_minimum() {
+        let window = Rect::new(300.0, 200.0, 1000.0, 800.0);
+        let r = shrink_rect(SCREEN, window);
+        assert_eq!(r.width, 1000.0 - SCREEN.width * 0.10);
+        assert_eq!(r.height, 800.0 - SCREEN.height * 0.10);
+
+        // Repeated shrinking never goes below 10% of usable.
+        let mut w = SCREEN;
+        for _ in 0..50 {
+            w = shrink_rect(SCREEN, w);
+        }
+        assert!(w.width >= SCREEN.width * MIN_SIZE_FRACTION - 1e-6);
+        assert!(w.height >= SCREEN.height * MIN_SIZE_FRACTION - 1e-6);
+    }
+
+    #[test]
+    fn grow_is_repeatable_and_reaches_full_in_bounded_steps() {
+        let mut w = Rect::new(700.0, 450.0, 300.0, 200.0);
+        for _ in 0..20 {
+            w = grow_rect(SCREEN, w);
+        }
+        assert_eq!(w, full_rect(SCREEN));
+    }
+
+    #[test]
+    fn almost_insets_beyond_the_already_padded_usable() {
+        let usable = padded(SCREEN, 16.0);
+        let r = almost_rect(usable, 48.0);
+        assert_eq!(r, padded(usable, 48.0));
+        assert!(r.x > usable.x);
+        assert!(r.width < usable.width);
+    }
+
+    #[test]
+    fn almost_zero_padding_equals_full() {
+        let usable = padded(SCREEN, 16.0);
+        assert_eq!(almost_rect(usable, 0.0), full_rect(usable));
     }
 
     #[test]

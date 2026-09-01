@@ -198,6 +198,24 @@ current display is affected — other monitors are left alone.
 snap tile --gap 24   # override the gap between tiles for this run
 ```
 
+### Grow, shrink, almost
+
+```bash
+snap grow      # increase toward the usable bounds
+snap shrink    # decrease toward a minimum
+snap almost    # fill usable area minus an extra inset (not fullscreen)
+```
+
+`grow`/`shrink` scale by 10% of the usable width/height per invocation, about
+the window's center — unless an edge is already flush with a usable edge, in
+which case that edge stays put (so `grow` after `snap left` widens to the
+right, not both ways). `shrink` stops at 10% of usable width/height; `grow`
+stops at the usable bounds. Both are stateless and repeatable.
+
+`almost` is like `snap full` but inset further by `almost_padding` (see
+[Configuration](#configuration)), so a sliver of desktop stays visible on
+every edge. It never invokes native fullscreen.
+
 ### Multi-monitor
 
 Move the focused window to another display, keeping its relative position
@@ -243,6 +261,10 @@ padding = 16
 # Manager is on, so windows never cover its strip. Ignored entirely when
 # Stage Manager is off. Set to 0 to disable the reservation. Default: 150.
 stage_manager_width = 150
+
+# Extra inset, in points, `snap almost` applies beyond `padding` so a sliver
+# of desktop stays visible on every edge. Default: 48.
+almost_padding = 48
 ```
 
 Stage Manager doesn't expose its strip width through any public API, so
@@ -276,6 +298,9 @@ modifiers = ["command", "control", "option", "shift"]
 "hyper+j" = { command = "~/.cargo/bin/snap bottom-left" }
 "hyper+k" = { command = "~/.cargo/bin/snap bottom-right" }
 "hyper+3" = { command = "~/.cargo/bin/snap third" }
+"hyper+equal" = { command = "~/.cargo/bin/snap grow" }
+"hyper+minus" = { command = "~/.cargo/bin/snap shrink" }
+"hyper+return" = { command = "~/.cargo/bin/snap almost" }
 ```
 
 Sides omit the size so they cycle 50% → 75% → 25%. Use the absolute path:

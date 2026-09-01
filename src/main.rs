@@ -12,10 +12,10 @@ use clap::Parser;
 
 use cli::{Cli, Command};
 use layout::{
-    DisplayTarget, MAX_PERCENT, MIN_PERCENT, Rect, center_rect, detect_centered_percent,
-    detect_directional_percent, detect_third, directional_rect, full_rect, is_supported_percent,
-    map_rect_between_displays, next_cycle_percent, next_third, padded, resolve_display_index,
-    sized_rect, third_rect,
+    DisplayTarget, MAX_PERCENT, MIN_PERCENT, Rect, almost_rect, center_rect,
+    detect_centered_percent, detect_directional_percent, detect_third, directional_rect, full_rect,
+    grow_rect, is_supported_percent, map_rect_between_displays, next_cycle_percent, next_third,
+    padded, resolve_display_index, shrink_rect, sized_rect, third_rect,
 };
 
 const EXIT_SUCCESS: u8 = 0;
@@ -69,8 +69,8 @@ fn accessibility_unavailable() -> anyhow::Error {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
-    let action = resolve_action(&cli)?;
     let config = config::load();
+    let action = resolve_action(&cli, &config)?;
 
     if !accessibility::is_trusted() {
         accessibility::prompt_for_trust();
@@ -98,7 +98,7 @@ enum Action {
     Display(DisplayTarget),
 }
 
-fn resolve_action(cli: &Cli) -> anyhow::Result<Action> {
+fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> {
     if let Some(command) = &cli.command {
         if let Some((position, size)) = command.as_position_and_size() {
             return match size {
@@ -122,6 +122,18 @@ fn resolve_action(cli: &Cli) -> anyhow::Result<Action> {
             Command::Center => Ok(Action::Reposition(Box::new(|usable, window| {
                 center_rect(usable, window.width, window.height)
             }))),
+            Command::Grow => Ok(Action::Reposition(Box::new(|usable, window| {
+                grow_rect(usable, window)
+            }))),
+            Command::Shrink => Ok(Action::Reposition(Box::new(|usable, window| {
+                shrink_rect(usable, window)
+            }))),
+            Command::Almost => {
+                let almost_padding = config.almost_padding;
+                Ok(Action::Reposition(Box::new(move |usable, _window| {
+                    almost_rect(usable, almost_padding)
+                })))
+            }
             Command::Tile { gap } => {
                 if let Some(gap) = gap {
                     validate_gap(*gap)?;
