@@ -12,7 +12,7 @@ use clap::Parser;
 
 use cli::{Cli, Command};
 use layout::{
-    DisplayTarget, Rect, SUPPORTED_PERCENTS, center_rect, detect_centered_percent,
+    DisplayTarget, MAX_PERCENT, MIN_PERCENT, Rect, center_rect, detect_centered_percent,
     detect_directional_percent, directional_rect, full_rect, is_supported_percent,
     map_rect_between_displays, next_cycle_percent, padded, resolve_display_index, sized_rect,
 };
@@ -160,9 +160,8 @@ fn validate_size(size: u32) -> anyhow::Result<()> {
     if is_supported_percent(size) {
         Ok(())
     } else {
-        let supported = SUPPORTED_PERCENTS.map(|p| p.to_string()).join(", ");
         Err(invalid_args(format!(
-            "error: unsupported size '{size}'\n\nsupported sizes: {supported}"
+            "error: unsupported size '{size}'\n\nsize must be an integer percent from {MIN_PERCENT} to {MAX_PERCENT}"
         )))
     }
 }

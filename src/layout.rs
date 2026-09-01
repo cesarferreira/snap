@@ -28,11 +28,14 @@ pub enum Position {
     Bottom,
 }
 
-/// v1 only supports these four percentages (PRD §6).
-pub const SUPPORTED_PERCENTS: [u32; 4] = [25, 50, 75, 100];
+/// Any integer percent in this (inclusive) range is a valid explicit size
+/// for centered/directional placement. `0` is meaningless (a zero-size
+/// window) and `>100` would overflow the usable area.
+pub const MIN_PERCENT: u32 = 1;
+pub const MAX_PERCENT: u32 = 100;
 
 pub fn is_supported_percent(percent: u32) -> bool {
-    SUPPORTED_PERCENTS.contains(&percent)
+    (MIN_PERCENT..=MAX_PERCENT).contains(&percent)
 }
 
 fn fraction(percent: u32) -> f64 {
@@ -360,12 +363,31 @@ mod tests {
     }
 
     #[test]
-    fn supported_percents_are_exactly_v1_set() {
-        for p in [25, 50, 75, 100] {
+    fn supported_percent_accepts_any_integer_from_1_to_100() {
+        for p in [1, 25, 33, 40, 50, 67, 75, 99, 100] {
             assert!(is_supported_percent(p));
         }
-        assert!(!is_supported_percent(42));
-        assert!(!is_supported_percent(33));
+        assert!(!is_supported_percent(0));
+        assert!(!is_supported_percent(101));
+    }
+
+    #[test]
+    fn arbitrary_percent_sizes_are_a_fraction_of_usable() {
+        let r = directional_rect(SCREEN, Position::Left, 33);
+        assert_eq!(r.width, 1728.0 * 0.33);
+        assert_eq!(r.height, SCREEN.height);
+
+        let r = sized_rect(SCREEN, 40);
+        assert_eq!(r.width, 1728.0 * 0.40);
+        assert_eq!(r.height, 1117.0 * 0.40);
+    }
+
+    #[test]
+    fn cycle_ignores_arbitrary_percents_and_still_enters_at_50() {
+        let window = directional_rect(SCREEN, Position::Left, 33);
+        let current = detect_directional_percent(SCREEN, Position::Left, window);
+        assert_eq!(current, None);
+        assert_eq!(next_cycle_percent(current), 50);
     }
 
     #[test]

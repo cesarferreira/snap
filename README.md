@@ -108,12 +108,13 @@ snap <command>
 ### Sizing
 
 Resize the focused window to a percentage of the current display's usable
-area, keeping it centered:
+area, keeping it centered. Any integer percent from 1 to 100 is valid:
 
 ```bash
 snap 25
+snap 40
 snap 50
-snap 75
+snap 67
 snap 100   # same as `snap full`
 ```
 
@@ -130,16 +131,20 @@ last, and there's nothing to remember between invocations.
 
 ### Positioning
 
-Anchor the focused window to a side, sized to 25/50/75% of the screen:
+Anchor the focused window to a side, sized to any integer percent (1-100) of
+the screen:
 
 ```bash
 snap left 50
-snap right 50
+snap right 33
 snap top 50
 snap bottom 50
 ```
 
-Omit the size to cycle the same way, per side:
+Omit the size to cycle 50/75/25%, per side. Cycling only steps through those
+three values regardless of what arbitrary percent the window currently has —
+if the window doesn't match one of the cycle steps, the first press snaps to
+50%:
 
 ```bash
 snap left    # 50% → 75% → 25% → 50% → ...
