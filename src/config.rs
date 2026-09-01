@@ -1,6 +1,6 @@
 //! Optional user config. Snap requires no configuration for normal usage
-//! (PRD §2); this only overrides the built-in default padding when
-//! `~/.config/snap.toml` exists.
+//! (PRD §2); this only overrides the built-in defaults (padding, the Stage
+//! Manager reserved width) when `~/.config/snap.toml` exists.
 
 use std::path::PathBuf;
 
@@ -9,11 +9,18 @@ pub struct Config {
     /// Screen-edge and inter-tile padding, in logical points, applied to
     /// every command unless overridden (e.g. `snap tile --gap`).
     pub padding: f64,
+    /// Width, in logical points, reserved on the left edge of every display
+    /// when Stage Manager is enabled, so windows don't cover its strip.
+    /// `0` disables the reservation even if Stage Manager is on.
+    pub stage_manager_width: f64,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { padding: 16.0 }
+        Config {
+            padding: 16.0,
+            stage_manager_width: 150.0,
+        }
     }
 }
 
@@ -33,7 +40,7 @@ fn config_path() -> Option<PathBuf> {
 }
 
 /// Parses `key = value` lines (`#` comments, blank lines ignored). Deliberately
-/// not a full TOML parser — a single scalar field doesn't warrant pulling in
+/// not a full TOML parser — a couple of scalar fields don't warrant pulling in
 /// `toml` + `serde` (PRD §22 avoids unnecessary dependencies).
 fn parse(contents: &str) -> Config {
     let mut config = Config::default();
@@ -46,10 +53,18 @@ fn parse(contents: &str) -> Config {
             continue;
         };
         let value = value.trim().trim_matches('"');
-        if key.trim() == "padding" {
-            if let Ok(padding) = value.parse::<f64>() {
-                config.padding = padding;
+        match key.trim() {
+            "padding" => {
+                if let Ok(padding) = value.parse::<f64>() {
+                    config.padding = padding;
+                }
             }
+            "stage_manager_width" => {
+                if let Ok(width) = value.parse::<f64>() {
+                    config.stage_manager_width = width;
+                }
+            }
+            _ => {}
         }
     }
     config
@@ -91,5 +106,13 @@ mod tests {
     #[test]
     fn tolerates_quoted_values() {
         assert_eq!(parse(r#"padding = "12""#).padding, 12.0);
+    }
+
+    #[test]
+    fn overrides_stage_manager_width() {
+        assert_eq!(
+            parse("stage_manager_width = 200").stage_manager_width,
+            200.0
+        );
     }
 }

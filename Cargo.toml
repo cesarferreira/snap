@@ -19,6 +19,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 cocoa = "0.26.1"
 core-foundation = "0.10.1"
+core-foundation-sys = "0.8.7"
 core-graphics = "0.25.0"
 objc = "0.2.7"
 

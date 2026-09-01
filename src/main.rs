@@ -76,8 +76,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     match action {
-        Action::Tile { gap } => run_tile(gap.unwrap_or(config.padding)),
-        Action::Reposition(compute) => run_reposition(compute, config.padding),
+        Action::Tile { gap } => run_tile(gap.unwrap_or(config.padding), config.stage_manager_width),
+        Action::Reposition(compute) => {
+            run_reposition(compute, config.padding, config.stage_manager_width)
+        }
     }
 }
 
@@ -148,24 +150,36 @@ fn validate_size(size: u32) -> anyhow::Result<()> {
     }
 }
 
-fn run_reposition(compute: ComputeRect, padding: f64) -> anyhow::Result<()> {
+fn run_reposition(
+    compute: ComputeRect,
+    padding: f64,
+    stage_manager_width: f64,
+) -> anyhow::Result<()> {
     let target = window::Window::focused()
         .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
     let window_rect = target.rect().map_err(runtime_failure)?;
-    let target_display = display::target_display_for(window_rect).map_err(runtime_failure)?;
+    let target_display =
+        display::target_display_for(window_rect, stage_manager_width).map_err(runtime_failure)?;
 
     let usable = padded(target_display.usable, padding);
     let rect = compute(usable, window_rect);
+    if std::env::var_os("SNAP_DEBUG").is_some() {
+        eprintln!(
+            "[snap debug] display.usable={:?} padded_usable={usable:?} requested={rect:?}",
+            target_display.usable
+        );
+    }
     target.set_rect(rect).map_err(runtime_failure)
 }
 
-fn run_tile(gap: f64) -> anyhow::Result<()> {
+fn run_tile(gap: f64, stage_manager_width: f64) -> anyhow::Result<()> {
     let debug = std::env::var_os("SNAP_DEBUG").is_some();
 
     let focused = window::Window::focused()
         .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
     let focused_rect = focused.rect().map_err(runtime_failure)?;
-    let target_display = display::target_display_for(focused_rect).map_err(runtime_failure)?;
+    let target_display =
+        display::target_display_for(focused_rect, stage_manager_width).map_err(runtime_failure)?;
 
     let mut candidates =
         window::visible_windows_on(target_display.frame).map_err(runtime_failure)?;
