@@ -66,6 +66,13 @@ pub enum Command {
         #[arg(value_name = "POSITION", value_parser = parse_third)]
         position: Option<Third>,
     },
+    /// Print visible, manipulable windows without moving anything.
+    List {
+        /// Restrict to the display containing the focused window (default),
+        /// or list every attached display.
+        #[arg(long, value_enum, default_value = "current")]
+        display: ListScope,
+    },
     /// Move the focused window to another display, preserving its relative
     /// position and size.
     Display {
@@ -73,6 +80,12 @@ pub enum Command {
         #[arg(value_name = "TARGET", value_parser = parse_display_target)]
         target: DisplayTarget,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ListScope {
+    Current,
+    All,
 }
 
 fn parse_third(s: &str) -> Result<Third, String> {

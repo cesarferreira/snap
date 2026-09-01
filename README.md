@@ -216,6 +216,28 @@ stops at the usable bounds. Both are stateless and repeatable.
 [Configuration](#configuration)), so a sliver of desktop stays visible on
 every edge. It never invokes native fullscreen.
 
+### Listing windows
+
+```bash
+snap list                  # windows on the current display (default)
+snap list --display all    # every attached display
+```
+
+`snap list` is the one command that prints on success — everything else is
+silent by design. Same window filters and ordering as `snap tile` (focused
+first, then top-to-bottom, left-to-right):
+
+```
+ID       APP                  DISPLAY FOCUSED TITLE
+182      Ghostty              1       *       snap
+194      Google Chrome        1               GitHub
+201      Slack                2               #general
+```
+
+`ID` is the window's `kCGWindowNumber`, stable for the life of the window.
+`TITLE` is best-effort — macOS withholds window titles without Screen
+Recording permission. No window is moved.
+
 ### Multi-monitor
 
 Move the focused window to another display, keeping its relative position
@@ -236,7 +258,8 @@ one display attached, `next`/`previous` fail with `error: only one display`
 ### Output & exit codes
 
 Successful commands print nothing, so snap is safe to bind to hotkeys and use
-in scripts. Errors go to stderr.
+in scripts, except `snap list`, which is read-only and prints its table on
+success. Errors go to stderr.
 
 | Code | Meaning                          |
 | ---- | -------------------------------- |

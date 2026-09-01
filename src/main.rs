@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use cli::{Cli, Command};
+use cli::{Cli, Command, ListScope};
 use layout::{
     DisplayTarget, MAX_PERCENT, MIN_PERCENT, Rect, almost_rect, center_rect,
     detect_centered_percent, detect_directional_percent, detect_third, directional_rect, full_rect,
@@ -85,6 +85,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Action::Display(target) => {
             run_display_move(target, config.padding, config.stage_manager_width)
         }
+        Action::List(scope) => run_list(scope, config.stage_manager_width),
     }
 }
 
@@ -96,6 +97,7 @@ enum Action {
     Reposition(ComputeRect),
     Tile { gap: Option<f64> },
     Display(DisplayTarget),
+    List(ListScope),
 }
 
 fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> {
@@ -141,6 +143,7 @@ fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> 
                 Ok(Action::Tile { gap: *gap })
             }
             Command::Display { target } => Ok(Action::Display(*target)),
+            Command::List { display } => Ok(Action::List(*display)),
             Command::Third { position } => match position {
                 Some(third) => {
                     let third = *third;
@@ -253,12 +256,25 @@ fn run_tile(gap: f64, stage_manager_width: f64) -> anyhow::Result<()> {
 
     let mut candidates =
         window::visible_windows_on(target_display.frame).map_err(runtime_failure)?;
-    candidates.retain(|c| !rects_roughly_equal(c.rect, focused_rect));
+    let focused_index = candidates
+        .iter()
+        .position(|c| rects_roughly_equal(c.rect, focused_rect));
 
-    let mut ordered = vec![window::TileCandidate {
-        window: focused,
-        rect: focused_rect,
-    }];
+    let mut ordered = Vec::with_capacity(candidates.len().max(1));
+    match focused_index {
+        Some(idx) => ordered.push(candidates.remove(idx)),
+        // The focused window wasn't in the tileable candidate set (e.g. a
+        // dialog Accessibility can still move) — fall back to a minimal
+        // candidate for it directly rather than dropping it from the tile.
+        None => ordered.push(window::TileCandidate {
+            window: focused,
+            rect: focused_rect,
+            pid: 0,
+            app_name: String::new(),
+            title: None,
+            window_number: -1,
+        }),
+    }
     ordered.extend(candidates);
 
     // The same padding value governs both the outer margin (window-to-screen-edge)
@@ -279,6 +295,62 @@ fn run_tile(gap: f64, stage_manager_width: f64) -> anyhow::Result<()> {
             let after = candidate.window.rect();
             eprintln!("[snap debug] requested={rect:?} set_rect={result:?} actual_after={after:?}");
         }
+    }
+    Ok(())
+}
+
+/// `snap list` — read-only, the one command allowed to print on success
+/// (PRD §29). Uses the same candidate set/filters as `snap tile`.
+fn run_list(scope: ListScope, stage_manager_width: f64) -> anyhow::Result<()> {
+    let focused_pid = window::frontmost_app_pid();
+    let focused_rect = window::Window::focused().ok().and_then(|w| w.rect().ok());
+
+    let displays = display::ordered_displays(stage_manager_width).map_err(runtime_failure)?;
+
+    let mut rows: Vec<(usize, window::TileCandidate)> = Vec::new();
+    match scope {
+        ListScope::Current => {
+            let window_rect = focused_rect.ok_or_else(|| {
+                ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE)
+            })?;
+            let idx = display::display_index_containing(&displays, window_rect);
+            let candidates =
+                window::visible_windows_on(displays[idx].frame).map_err(runtime_failure)?;
+            rows.extend(candidates.into_iter().map(|c| (idx, c)));
+        }
+        ListScope::All => {
+            for (idx, d) in displays.iter().enumerate() {
+                let candidates = window::visible_windows_on(d.frame).map_err(runtime_failure)?;
+                rows.extend(candidates.into_iter().map(|c| (idx, c)));
+            }
+        }
+    }
+
+    // Focused first, then the existing top-to-bottom/left-to-right tile
+    // order within (and across, for `--display all`) displays.
+    if let Some(pos) = rows.iter().position(|(_, c)| {
+        Some(c.pid) == focused_pid && focused_rect.is_some_and(|r| rects_roughly_equal(r, c.rect))
+    }) {
+        let focused_row = rows.remove(pos);
+        rows.insert(0, focused_row);
+    }
+
+    println!(
+        "{:<8} {:<20} {:<7} {:<7} TITLE",
+        "ID", "APP", "DISPLAY", "FOCUSED"
+    );
+    for (i, (display_index, candidate)) in rows.iter().enumerate() {
+        let is_focused = i == 0
+            && Some(candidate.pid) == focused_pid
+            && focused_rect.is_some_and(|r| rects_roughly_equal(r, candidate.rect));
+        println!(
+            "{:<8} {:<20} {:<7} {:<7} {}",
+            candidate.window_number,
+            candidate.app_name,
+            display_index + 1,
+            if is_focused { "*" } else { "" },
+            candidate.title.as_deref().unwrap_or(""),
+        );
     }
     Ok(())
 }

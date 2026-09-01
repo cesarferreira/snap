@@ -16,11 +16,12 @@ use core_foundation::base::{CFType, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::number::{CFNumber, CFNumberRef};
-use core_foundation::string::CFString;
+use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::geometry::{CGPoint, CGSize};
 use core_graphics::window::{
     copy_window_info, kCGWindowBounds, kCGWindowLayer, kCGWindowListExcludeDesktopElements,
-    kCGWindowListOptionOnScreenOnly, kCGWindowOwnerPID,
+    kCGWindowListOptionOnScreenOnly, kCGWindowName, kCGWindowNumber, kCGWindowOwnerName,
+    kCGWindowOwnerPID,
 };
 use objc::{class, msg_send, sel, sel_impl};
 
@@ -166,6 +167,18 @@ impl Window {
 pub struct TileCandidate {
     pub window: Window,
     pub rect: Rect,
+    /// Owning application's pid.
+    pub pid: pid_t,
+    /// `kCGWindowOwnerName` — the owning application's name, as CGWindowList
+    /// reports it (matches what Activity Monitor shows).
+    pub app_name: String,
+    /// `kCGWindowName` — the window's title. Often empty without Screen
+    /// Recording permission (macOS withholds it since 10.15); best-effort.
+    pub title: Option<String>,
+    /// `kCGWindowNumber` — stable for the life of the window (until closed),
+    /// unlike the rect-matching used to find its `AXUIElement`. The
+    /// identity later features (e.g. undo) should key on, per its own issue.
+    pub window_number: i64,
 }
 
 /// Enumerates normal, visible, resizable application windows overlapping
@@ -227,11 +240,21 @@ pub fn visible_windows_on(display_frame: Rect) -> Result<Vec<TileCandidate>> {
         if !is_tileable(&element) {
             continue;
         }
+        let app_name =
+            dict_string(&dict, unsafe { kCGWindowOwnerName } as *const c_void).unwrap_or_default();
+        let title =
+            dict_string(&dict, unsafe { kCGWindowName } as *const c_void).filter(|t| !t.is_empty());
+        let window_number =
+            dict_i64(&dict, unsafe { kCGWindowNumber } as *const c_void).unwrap_or(-1);
         candidates.push(TileCandidate {
             window: Window {
                 element: (*element).clone(),
             },
             rect: cg_bounds,
+            pid: pid as pid_t,
+            app_name,
+            title,
+            window_number,
         });
     }
 
@@ -257,6 +280,12 @@ fn dict_i64(dict: &CFDictionary, key: *const c_void) -> Option<i64> {
     let value_ptr = dict.find(key)?;
     let number = unsafe { CFNumber::wrap_under_get_rule(*value_ptr as CFNumberRef) };
     number.to_i64()
+}
+
+fn dict_string(dict: &CFDictionary, key: *const c_void) -> Option<String> {
+    let value_ptr = dict.find(key)?;
+    let string = unsafe { CFString::wrap_under_get_rule(*value_ptr as CFStringRef) };
+    Some(string.to_string())
 }
 
 fn dict_bounds(dict: &CFDictionary) -> Option<Rect> {
@@ -297,7 +326,7 @@ fn points_equal(a: f64, b: f64) -> bool {
     (a - b).abs() < 1.0
 }
 
-fn frontmost_app_pid() -> Option<pid_t> {
+pub fn frontmost_app_pid() -> Option<pid_t> {
     unsafe {
         let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
         let app: id = msg_send![workspace, frontmostApplication];
