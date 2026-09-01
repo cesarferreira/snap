@@ -75,6 +75,7 @@ fn accessibility_unavailable() -> anyhow::Error {
 fn run(cli: Cli) -> anyhow::Result<()> {
     let config = config::load();
     let action = resolve_action(&cli, &config)?;
+    let app = cli.app.as_deref();
 
     if !accessibility::is_trusted() {
         accessibility::prompt_for_trust();
@@ -88,10 +89,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             layout,
         ),
         Action::Reposition(compute) => {
-            run_reposition(compute, config.padding, config.stage_manager_width)
+            run_reposition(compute, config.padding, config.stage_manager_width, app)
         }
         Action::Display(target) => {
-            run_display_move(target, config.padding, config.stage_manager_width)
+            run_display_move(target, config.padding, config.stage_manager_width, app)
         }
         Action::List(scope) => run_list(scope, config.stage_manager_width),
         Action::Focus(direction) => run_focus(direction, config.stage_manager_width),
@@ -159,6 +160,11 @@ fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> 
                 })))
             }
             Command::Tile { gap, layout } => {
+                if cli.app.is_some() {
+                    return Err(invalid_args(
+                        "error: --app is not supported with tile\n\ntile is a display operation; use --app with size/side/corner/full/center commands instead",
+                    ));
+                }
                 if let Some(gap) = gap {
                     validate_gap(*gap)?;
                 }
@@ -222,14 +228,106 @@ fn validate_size(size: u32) -> anyhow::Result<()> {
     }
 }
 
+/// Resolves the window a mutate command should act on: the focused window
+/// by default, or the window matching `--app NAME` when given.
+fn resolve_target(
+    app: Option<&str>,
+    stage_manager_width: f64,
+) -> anyhow::Result<(window::Window, Rect)> {
+    match app {
+        None => {
+            let window = window::Window::focused()
+                .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
+            let rect = window.rect().map_err(runtime_failure)?;
+            Ok((window, rect))
+        }
+        Some(name) => {
+            let candidate = find_app_window(name, stage_manager_width)?;
+            let rect = candidate.rect;
+            Ok((candidate.window, rect))
+        }
+    }
+}
+
+/// `--app NAME` resolution (PRD issue #4): exact, case-insensitive match on
+/// `kCGWindowOwnerName` across every attached display. If the app is
+/// frontmost, its currently focused window wins; otherwise its largest
+/// window (ties broken by title) does. Two distinct running processes
+/// sharing the same displayed app name are reported as ambiguous rather
+/// than picked between arbitrarily.
+fn find_app_window(name: &str, stage_manager_width: f64) -> anyhow::Result<window::TileCandidate> {
+    let displays = display::ordered_displays(stage_manager_width).map_err(runtime_failure)?;
+    let focused_pid = window::frontmost_app_pid();
+    let focused_rect = window::Window::focused().ok().and_then(|w| w.rect().ok());
+
+    let mut seen = std::collections::HashSet::new();
+    let mut matches: Vec<window::TileCandidate> = Vec::new();
+    for d in &displays {
+        let candidates = window::visible_windows_on(d.frame).map_err(runtime_failure)?;
+        for c in candidates {
+            if c.app_name.eq_ignore_ascii_case(name) && seen.insert(c.window_number) {
+                matches.push(c);
+            }
+        }
+    }
+
+    if matches.is_empty() {
+        return Err(ExitError(
+            format!("error: no window for app '{name}'"),
+            EXIT_RUNTIME_FAILURE,
+        )
+        .into());
+    }
+
+    let distinct_pids: std::collections::HashSet<_> = matches.iter().map(|c| c.pid).collect();
+    if distinct_pids.len() > 1 {
+        let mut pids: Vec<_> = distinct_pids.into_iter().collect();
+        pids.sort_unstable();
+        let candidates_desc = pids
+            .iter()
+            .map(|pid| format!("  pid {pid}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(ExitError(
+            format!(
+                "error: ambiguous app name '{name}' matches multiple running processes:\n{candidates_desc}"
+            ),
+            EXIT_RUNTIME_FAILURE,
+        )
+        .into());
+    }
+
+    if Some(matches[0].pid) == focused_pid {
+        if let Some(idx) =
+            focused_rect.and_then(|fr| matches.iter().position(|c| rects_roughly_equal(fr, c.rect)))
+        {
+            return Ok(matches.swap_remove(idx));
+        }
+    }
+
+    // Not frontmost (or its focused window wasn't in the candidate set):
+    // largest window wins, ties broken by title for determinism.
+    matches.sort_by(|a, b| {
+        (b.rect.width * b.rect.height)
+            .partial_cmp(&(a.rect.width * a.rect.height))
+            .unwrap()
+            .then(
+                a.title
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(b.title.as_deref().unwrap_or("")),
+            )
+    });
+    Ok(matches.remove(0))
+}
+
 fn run_reposition(
     compute: ComputeRect,
     padding: f64,
     stage_manager_width: f64,
+    app: Option<&str>,
 ) -> anyhow::Result<()> {
-    let target = window::Window::focused()
-        .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
-    let window_rect = target.rect().map_err(runtime_failure)?;
+    let (target, window_rect) = resolve_target(app, stage_manager_width)?;
     let target_display =
         display::target_display_for(window_rect, stage_manager_width).map_err(runtime_failure)?;
 
@@ -248,10 +346,9 @@ fn run_display_move(
     target: DisplayTarget,
     padding: f64,
     stage_manager_width: f64,
+    app: Option<&str>,
 ) -> anyhow::Result<()> {
-    let focused = window::Window::focused()
-        .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
-    let window_rect = focused.rect().map_err(runtime_failure)?;
+    let (focused, window_rect) = resolve_target(app, stage_manager_width)?;
 
     let displays = display::ordered_displays(stage_manager_width).map_err(runtime_failure)?;
     if displays.len() == 1 && matches!(target, DisplayTarget::Next | DisplayTarget::Previous) {

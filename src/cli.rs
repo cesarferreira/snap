@@ -19,6 +19,14 @@ pub struct Cli {
     /// Omit entirely to cycle through 25/50/75%.
     #[arg(value_name = "SIZE")]
     pub size: Option<u32>,
+
+    /// Target a window by application name instead of the focused window.
+    /// Exact match, case-insensitive, against the app name as CGWindowList
+    /// (and Activity Monitor) report it. Applies to size, sides, corners,
+    /// `full`, `center`, and `display`; not to `tile` or other display-wide
+    /// commands.
+    #[arg(long, global = true, value_name = "NAME")]
+    pub app: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]

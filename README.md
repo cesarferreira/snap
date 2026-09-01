@@ -228,6 +228,27 @@ stops at the usable bounds. Both are stateless and repeatable.
 [Configuration](#configuration)), so a sliver of desktop stays visible on
 every edge. It never invokes native fullscreen.
 
+### Targeting a window by app name
+
+By default every command acts on the focused window. `--app NAME` targets a
+different app instead, useful for scripts and non-interactive bindings:
+
+```bash
+snap --app Ghostty left 50
+snap --app "Google Chrome" full
+```
+
+Matching is exact and case-insensitive against the app name (as
+`CGWindowList`/Activity Monitor report it — `snap list` shows the same
+names). If the app is frontmost, its currently focused window is used;
+otherwise its largest window (ties broken by title). Unknown app → `error:
+no window for app 'X'`, exit 1. Two distinct running processes sharing the
+same displayed name → an ambiguous-match error, exit 1.
+
+`--app` applies to size, sides, corners, `full`, `center`, and `display`.
+It is **not** supported with `tile` (a display-wide operation) — `snap --app
+Foo tile` errors; use `snap --app Foo full` instead.
+
 ### Listing windows
 
 ```bash
@@ -409,6 +430,7 @@ modifiers = ["command", "control", "option", "shift"]
 "hyper+s" = { command = "~/.cargo/bin/snap stack" }
 "hyper+shift+n" = { command = "~/.cargo/bin/snap stack next" }
 "hyper+shift+p" = { command = "~/.cargo/bin/snap stack previous" }
+"hyper+g" = { command = "~/.cargo/bin/snap --app Ghostty full" }
 ```
 
 Sides omit the size so they cycle 50% → 75% → 25%. Use the absolute path:
