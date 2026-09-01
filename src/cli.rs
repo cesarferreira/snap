@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 
 use crate::layout::{DisplayTarget, Position, Third};
+use crate::tile::TileLayout;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -54,6 +55,11 @@ pub enum Command {
     Center,
     /// Tile visible windows on the current display.
     Tile {
+        /// Named layout: `columns` (n equal columns), `rows` (n equal rows),
+        /// or `master` (focused ~50% left, rest stacked right). Omit for the
+        /// default deterministic 1/2/3/4/5+ assignment.
+        #[arg(value_enum)]
+        layout: Option<TileLayout>,
         /// Gap between tiles, in logical points. Defaults to the configured
         /// padding (see `~/.config/snap.toml`).
         #[arg(long, allow_hyphen_values = true)]

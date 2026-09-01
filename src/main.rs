@@ -17,6 +17,7 @@ use layout::{
     grow_rect, is_supported_percent, map_rect_between_displays, next_cycle_percent, next_third,
     padded, resolve_display_index, shrink_rect, sized_rect, third_rect,
 };
+use tile::TileLayout;
 
 const EXIT_SUCCESS: u8 = 0;
 const EXIT_RUNTIME_FAILURE: u8 = 1;
@@ -78,7 +79,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     match action {
-        Action::Tile { gap } => run_tile(gap.unwrap_or(config.padding), config.stage_manager_width),
+        Action::Tile { gap, layout } => run_tile(
+            gap.unwrap_or(config.padding),
+            config.stage_manager_width,
+            layout,
+        ),
         Action::Reposition(compute) => {
             run_reposition(compute, config.padding, config.stage_manager_width)
         }
@@ -95,7 +100,10 @@ type ComputeRect = Box<dyn Fn(Rect, Rect) -> Rect>;
 
 enum Action {
     Reposition(ComputeRect),
-    Tile { gap: Option<f64> },
+    Tile {
+        gap: Option<f64>,
+        layout: TileLayout,
+    },
     Display(DisplayTarget),
     List(ListScope),
 }
@@ -136,11 +144,14 @@ fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> 
                     almost_rect(usable, almost_padding)
                 })))
             }
-            Command::Tile { gap } => {
+            Command::Tile { gap, layout } => {
                 if let Some(gap) = gap {
                     validate_gap(*gap)?;
                 }
-                Ok(Action::Tile { gap: *gap })
+                Ok(Action::Tile {
+                    gap: *gap,
+                    layout: layout.unwrap_or_default(),
+                })
             }
             Command::Display { target } => Ok(Action::Display(*target)),
             Command::List { display } => Ok(Action::List(*display)),
@@ -245,7 +256,7 @@ fn run_display_move(
     focused.set_rect(new_rect).map_err(runtime_failure)
 }
 
-fn run_tile(gap: f64, stage_manager_width: f64) -> anyhow::Result<()> {
+fn run_tile(gap: f64, stage_manager_width: f64, layout: TileLayout) -> anyhow::Result<()> {
     let debug = std::env::var_os("SNAP_DEBUG").is_some();
 
     let focused = window::Window::focused()
@@ -287,7 +298,7 @@ fn run_tile(gap: f64, stage_manager_width: f64) -> anyhow::Result<()> {
         eprintln!("[snap debug] {} window(s) to tile", ordered.len());
     }
 
-    let rects = tile::tile_rects(usable, ordered.len(), gap);
+    let rects = tile::tile_rects_with_layout(usable, ordered.len(), gap, layout);
     for (candidate, rect) in ordered.into_iter().zip(rects) {
         // An individual unmanageable window is skipped, not fatal (PRD §23).
         let result = candidate.window.set_rect(rect);

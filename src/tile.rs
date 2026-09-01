@@ -4,11 +4,42 @@
 
 use crate::layout::Rect;
 
+/// Named `snap tile` layouts. `Default` is the existing deterministic
+/// 1/2/3/4/5+ assignment; the others are opt-in, uniform layouts regardless
+/// of window count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum TileLayout {
+    #[default]
+    Default,
+    Columns,
+    Rows,
+    Master,
+}
+
 /// Computes tile rects for `count` windows within `usable`, edge-to-edge
-/// unless `gap` is non-zero (PRD §16).
-pub fn tile_rects(usable: Rect, count: usize, gap: f64) -> Vec<Rect> {
-    let raw = match count {
-        0 => return Vec::new(),
+/// unless `gap` is non-zero (PRD §16). `layout` picks the named variant
+/// (`snap tile columns|rows|master`); [`TileLayout::Default`] is the
+/// existing deterministic 1/2/3/4/5+ assignment.
+pub fn tile_rects_with_layout(
+    usable: Rect,
+    count: usize,
+    gap: f64,
+    layout: TileLayout,
+) -> Vec<Rect> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let raw = match layout {
+        TileLayout::Default => default_layout(usable, count),
+        TileLayout::Columns => columns_layout(usable, count),
+        TileLayout::Rows => rows_layout(usable, count),
+        TileLayout::Master => master_layout(usable, count),
+    };
+    raw.into_iter().map(|r| inset(r, gap, usable)).collect()
+}
+
+fn default_layout(usable: Rect, count: usize) -> Vec<Rect> {
+    match count {
         1 => vec![usable],
         2 => {
             let half = usable.width / 2.0;
@@ -54,9 +85,68 @@ pub fn tile_rects(usable: Rect, count: usize, gap: f64) -> Vec<Rect> {
             ]
         }
         n => grid(usable, n),
-    };
+    }
+}
 
-    raw.into_iter().map(|r| inset(r, gap, usable)).collect()
+/// `n` equal-width, full-height columns, left-to-right. The last column
+/// absorbs any remainder pixels so the set exactly covers `usable.width`.
+fn columns_layout(usable: Rect, n: usize) -> Vec<Rect> {
+    let col_width = (usable.width / n as f64).floor();
+    (0..n)
+        .map(|i| {
+            let x = usable.x + col_width * i as f64;
+            let width = if i == n - 1 {
+                usable.x + usable.width - x
+            } else {
+                col_width
+            };
+            Rect::new(x, usable.y, width, usable.height)
+        })
+        .collect()
+}
+
+/// `n` equal-height, full-width rows, top-to-bottom. The last row absorbs
+/// any remainder pixels so the set exactly covers `usable.height`.
+fn rows_layout(usable: Rect, n: usize) -> Vec<Rect> {
+    let row_height = (usable.height / n as f64).floor();
+    (0..n)
+        .map(|i| {
+            let y = usable.y + row_height * i as f64;
+            let height = if i == n - 1 {
+                usable.y + usable.height - y
+            } else {
+                row_height
+            };
+            Rect::new(usable.x, y, usable.width, height)
+        })
+        .collect()
+}
+
+/// Focused window at ~50% width on the left; the rest stack evenly on the
+/// right, same shape as the default 3-window layout but for any `n >= 2`.
+/// `n == 1` fills the screen.
+fn master_layout(usable: Rect, n: usize) -> Vec<Rect> {
+    if n == 1 {
+        return vec![usable];
+    }
+    let master_width = usable.width / 2.0;
+    let stack_width = usable.width - master_width;
+    let stack_x = usable.x + master_width;
+    let stack_n = n - 1;
+    let cell_height = (usable.height / stack_n as f64).floor();
+
+    let mut rects = Vec::with_capacity(n);
+    rects.push(Rect::new(usable.x, usable.y, master_width, usable.height));
+    for i in 0..stack_n {
+        let y = usable.y + cell_height * i as f64;
+        let height = if i == stack_n - 1 {
+            usable.y + usable.height - y
+        } else {
+            cell_height
+        };
+        rects.push(Rect::new(stack_x, y, stack_width, height));
+    }
+    rects
 }
 
 /// 5+: balanced grid, `columns = ceil(sqrt(n))`, `rows = ceil(n / columns)`,
@@ -117,6 +207,10 @@ fn inset(rect: Rect, gap: f64, usable: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tile_rects(usable: Rect, count: usize, gap: f64) -> Vec<Rect> {
+        tile_rects_with_layout(usable, count, gap, TileLayout::Default)
+    }
 
     const SCREEN: Rect = Rect {
         x: 0.0,
@@ -233,5 +327,95 @@ mod tests {
         let a = tile_rects(SCREEN, 6, 4.0);
         let b = tile_rects(SCREEN, 6, 4.0);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn default_layout_via_tile_rects_with_layout_matches_tile_rects() {
+        for n in 1..=6 {
+            assert_eq!(
+                tile_rects(SCREEN, n, 0.0),
+                tile_rects_with_layout(SCREEN, n, 0.0, TileLayout::Default)
+            );
+        }
+    }
+
+    #[test]
+    fn columns_layout_covers_bounds_for_various_counts() {
+        for n in [1, 2, 3, 4, 6] {
+            let rects = tile_rects_with_layout(SCREEN, n, 0.0, TileLayout::Columns);
+            assert_eq!(rects.len(), n);
+            assert_no_overlap(&rects);
+            assert_inside_bounds(&rects, SCREEN);
+            for r in &rects {
+                assert_eq!(r.height, SCREEN.height);
+            }
+            let total_width: f64 = rects.iter().map(|r| r.width).sum();
+            assert!((total_width - SCREEN.width).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn columns_layout_focused_is_leftmost() {
+        let rects = tile_rects_with_layout(SCREEN, 3, 0.0, TileLayout::Columns);
+        assert_eq!(rects[0].x, SCREEN.x);
+    }
+
+    #[test]
+    fn rows_layout_covers_bounds_for_various_counts() {
+        for n in [1, 2, 3, 4, 6] {
+            let rects = tile_rects_with_layout(SCREEN, n, 0.0, TileLayout::Rows);
+            assert_eq!(rects.len(), n);
+            assert_no_overlap(&rects);
+            assert_inside_bounds(&rects, SCREEN);
+            for r in &rects {
+                assert_eq!(r.width, SCREEN.width);
+            }
+            let total_height: f64 = rects.iter().map(|r| r.height).sum();
+            assert!((total_height - SCREEN.height).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn rows_layout_focused_is_topmost() {
+        let rects = tile_rects_with_layout(SCREEN, 3, 0.0, TileLayout::Rows);
+        assert_eq!(rects[0].y, SCREEN.y);
+    }
+
+    #[test]
+    fn master_layout_single_window_fills_screen() {
+        let rects = tile_rects_with_layout(SCREEN, 1, 0.0, TileLayout::Master);
+        assert_eq!(rects, vec![SCREEN]);
+    }
+
+    #[test]
+    fn master_layout_focused_is_half_width_left() {
+        for n in [2, 3, 4, 6] {
+            let rects = tile_rects_with_layout(SCREEN, n, 0.0, TileLayout::Master);
+            assert_eq!(rects.len(), n);
+            assert_eq!(rects[0], Rect::new(0.0, 0.0, 600.0, 800.0));
+            assert_no_overlap(&rects);
+            assert_inside_bounds(&rects, SCREEN);
+        }
+    }
+
+    #[test]
+    fn tile_variants_apply_gap() {
+        for layout in [TileLayout::Columns, TileLayout::Rows, TileLayout::Master] {
+            let rects = tile_rects_with_layout(SCREEN, 3, 8.0, layout);
+            assert_no_overlap(&rects);
+            assert_inside_bounds(&rects, SCREEN);
+        }
+    }
+
+    #[test]
+    fn zero_windows_returns_empty_for_every_layout() {
+        for layout in [
+            TileLayout::Default,
+            TileLayout::Columns,
+            TileLayout::Rows,
+            TileLayout::Master,
+        ] {
+            assert_eq!(tile_rects_with_layout(SCREEN, 0, 0.0, layout), Vec::new());
+        }
     }
 }

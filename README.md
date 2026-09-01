@@ -198,6 +198,18 @@ current display is affected — other monitors are left alone.
 snap tile --gap 24   # override the gap between tiles for this run
 ```
 
+Named layout variants opt out of the default assignment:
+
+```bash
+snap tile columns   # n equal columns, full height, focused leftmost
+snap tile rows      # n equal rows, full width, focused topmost
+snap tile master    # focused ~50% width left; the rest stack evenly on the right
+snap tile master --gap 24
+```
+
+Use `columns`/`rows`/`master` when you always want the same shape regardless
+of window count (e.g. four terminals as even columns on an ultrawide).
+
 ### Grow, shrink, almost
 
 ```bash
