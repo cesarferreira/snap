@@ -15,7 +15,7 @@ $ snap tile</pre>
     <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
     <img alt="Rust" src="https://img.shields.io/badge/rust-1.85%2B-orange">
     <img alt="Edition" src="https://img.shields.io/badge/edition-2024-blue">
-    <a href="https://crates.io/crates/snap"><img alt="crates.io" src="https://img.shields.io/crates/v/snap.svg"></a>
+    <a href="https://crates.io/crates/snap-macos"><img alt="crates.io" src="https://img.shields.io/crates/v/snap-macos.svg"></a>
   </p>
 
   <p>
@@ -52,7 +52,7 @@ layout tree. It just puts your windows where you want them.
 Requires [Rust](https://rustup.rs) **1.85+** and `~/.cargo/bin` on your `PATH`.
 
 ```bash
-cargo install snap
+cargo install snap-macos   # installs the `snap` binary
 ```
 
 Verify:
