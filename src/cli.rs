@@ -111,6 +111,10 @@ pub enum Command {
     /// Restore the focused window to its previous frame (toggles: a second
     /// `undo` returns to where the first one started).
     Undo,
+    /// Print Accessibility trust, config, displays, and the focused window,
+    /// for debugging a broken setup. Read-only; the one other command
+    /// (besides `list`) that prints on success.
+    Doctor,
     /// Move the focused window to another display, preserving its relative
     /// position and size.
     Display {

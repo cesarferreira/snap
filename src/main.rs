@@ -76,6 +76,14 @@ fn accessibility_unavailable() -> anyhow::Error {
 fn run(cli: Cli) -> anyhow::Result<()> {
     let config = config::load();
     let action = resolve_action(&cli, &config)?;
+
+    // `doctor` reports Accessibility status rather than requiring it —
+    // unlike every other command, it must still produce output (and exit
+    // 0) when snap isn't trusted yet.
+    if let Action::Doctor = action {
+        return run_doctor(&config, config.stage_manager_width);
+    }
+
     let app = cli.app.as_deref();
 
     if !accessibility::is_trusted() {
@@ -105,6 +113,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             config.accordion_padding,
         ),
         Action::Undo => run_undo(config.stage_manager_width),
+        Action::Doctor => unreachable!("handled above before the accessibility gate"),
     }
 }
 
@@ -124,6 +133,7 @@ enum Action {
     Swap(Direction),
     Stack(Option<StackAction>),
     Undo,
+    Doctor,
 }
 
 fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> {
@@ -182,6 +192,7 @@ fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> 
             Command::Swap { direction } => Ok(Action::Swap(*direction)),
             Command::Stack { action } => Ok(Action::Stack(*action)),
             Command::Undo => Ok(Action::Undo),
+            Command::Doctor => Ok(Action::Doctor),
             Command::Third { position } => match position {
                 Some(third) => {
                     let third = *third;
@@ -398,6 +409,111 @@ fn run_display_move(
 
 /// `snap undo` — restores the focused window to its previously recorded
 /// frame, then swaps the cache entry so a second `undo` toggles back.
+/// `snap doctor` — read-only diagnostic report (PRD issue #10). Unlike
+/// every other command it does not require Accessibility trust to run: it
+/// reports trust status as one line among several, exiting 0 as long as it
+/// could produce a report at all.
+fn run_doctor(config: &config::Config, stage_manager_width: f64) -> anyhow::Result<()> {
+    println!("snap {}", env!("CARGO_PKG_VERSION"));
+    if let Ok(path) = std::env::current_exe() {
+        println!("binary: {}", path.display());
+    }
+    println!();
+
+    if accessibility::is_trusted() {
+        println!("Accessibility: trusted");
+    } else {
+        println!("Accessibility: not trusted");
+        for line in accessibility::PERMISSION_MESSAGE.lines() {
+            println!("  {line}");
+        }
+    }
+    println!();
+
+    match config::config_path() {
+        Some(path) if path.exists() => println!("Config: {}", path.display()),
+        Some(path) => println!("Config: {} (not found, using defaults)", path.display()),
+        None => println!("Config: $HOME not set, using defaults"),
+    }
+    println!("  padding = {}", config.padding);
+    println!("  stage_manager_width = {}", config.stage_manager_width);
+    println!("  almost_padding = {}", config.almost_padding);
+    println!("  accordion_padding = {}", config.accordion_padding);
+    println!();
+
+    let stage_manager_on = display::stage_manager_enabled();
+    if stage_manager_on && config.stage_manager_width > 0.0 {
+        println!(
+            "Stage Manager: on (inset {} applied)",
+            config.stage_manager_width
+        );
+    } else if stage_manager_on {
+        println!("Stage Manager: on (inset ignored — stage_manager_width = 0)");
+    } else {
+        println!("Stage Manager: off (inset ignored)");
+    }
+    println!();
+
+    let displays = display::ordered_displays(stage_manager_width).unwrap_or_default();
+    let focused_rect = window::Window::focused().ok().and_then(|w| w.rect().ok());
+    let current_index = focused_rect.map(|r| display::display_index_containing(&displays, r));
+
+    println!("Displays (left-to-right, then top-to-bottom):");
+    if displays.is_empty() {
+        println!("  (none found)");
+    }
+    for (i, d) in displays.iter().enumerate() {
+        let marker = if current_index == Some(i) {
+            "  [current]"
+        } else {
+            ""
+        };
+        println!(
+            "  {}. {}x{} usable {}x{} origin ({}, {}){marker}",
+            i + 1,
+            d.frame.width,
+            d.frame.height,
+            d.usable.width,
+            d.usable.height,
+            d.frame.x,
+            d.frame.y,
+        );
+    }
+    println!();
+
+    match focused_rect {
+        None => println!("Focused: no focused window"),
+        Some(rect) => {
+            let display_index = current_index.map(|i| i + 1);
+            let label = display_index
+                .and_then(|i| {
+                    let d = displays.get(i - 1)?;
+                    let candidates = window::visible_windows_on(d.frame).ok()?;
+                    candidates
+                        .into_iter()
+                        .find(|c| rects_roughly_equal(c.rect, rect))
+                })
+                .map(|c| {
+                    let title = c.title.as_deref().unwrap_or("");
+                    format!("{} — \"{title}\"", c.app_name)
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            println!(
+                "Focused: {label}  frame ({}, {}, {}, {})  display {}",
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height,
+                display_index
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "?".into())
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn run_undo(stage_manager_width: f64) -> anyhow::Result<()> {
     let focused = window::Window::focused()
         .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;

@@ -68,7 +68,9 @@ snap --help
 The first time snap needs to move a window, macOS will ask you to grant
 **Accessibility** permission (System Settings → Privacy & Security →
 Accessibility) — for the app that launched it (your terminal), since snap has
-no bundle of its own for macOS to attribute the permission to directly.
+no bundle of its own for macOS to attribute the permission to directly. If
+something still looks off, run [`snap doctor`](#diagnostics) — it's the one
+command besides `snap list` that prints on success.
 
 <details>
 <summary><strong>Build from source</strong> — for development or unreleased changes</summary>
@@ -246,6 +248,20 @@ after `snap tile`, where undo restores only that one window, not the whole
 tiled group — `error: nothing to undo`, exit 1. If the cache can't be
 written, mutations still succeed; only undo may fail.
 
+### Diagnostics
+
+```bash
+snap doctor
+```
+
+Prints everything needed to debug a broken setup: Accessibility trust,
+binary path, the effective config (and whether `~/.config/snap.toml` was
+found), Stage Manager status, every attached display with its usable
+bounds and which one is "current," and the focused window. Read-only —
+never moves a window — and, unlike every other command, doesn't require
+Accessibility to run: it reports trust status as one line among several and
+exits 0 as long as it produced a report. Safe to paste into a GitHub issue.
+
 ### Targeting a window by app name
 
 By default every command acts on the focused window. `--app NAME` targets a
@@ -366,8 +382,8 @@ one display attached, `next`/`previous` fail with `error: only one display`
 ### Output & exit codes
 
 Successful commands print nothing, so snap is safe to bind to hotkeys and use
-in scripts, except `snap list`, which is read-only and prints its table on
-success. Errors go to stderr.
+in scripts, except the two read-only commands: `snap list` prints its table
+and `snap doctor` prints its report. Errors go to stderr.
 
 | Code | Meaning                          |
 | ---- | -------------------------------- |

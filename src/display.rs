@@ -72,7 +72,7 @@ pub fn all_displays(stage_manager_width: f64) -> Result<Vec<Display>> {
 /// Reads `GloballyEnabled` from the `com.apple.WindowManager` preference
 /// domain — the same flag System Settings → Desktop & Dock → Stage Manager
 /// toggles (verified via `defaults read com.apple.WindowManager`).
-fn stage_manager_enabled() -> bool {
+pub fn stage_manager_enabled() -> bool {
     unsafe {
         let key = CFString::from_static_string("GloballyEnabled");
         let app_id = CFString::from_static_string("com.apple.WindowManager");

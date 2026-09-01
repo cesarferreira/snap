@@ -43,7 +43,7 @@ pub fn load() -> Config {
     parse(&contents)
 }
 
-fn config_path() -> Option<PathBuf> {
+pub fn config_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(PathBuf::from(home).join(".config").join("snap.toml"))
 }
