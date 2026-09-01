@@ -179,6 +179,48 @@ pub fn detect_centered_percent(usable: Rect, window: Rect) -> Option<u32> {
         .find(|&p| rects_match(sized_rect(usable, p), window))
 }
 
+/// `snap third [left|center|right]` — ultrawide-friendly full-height thirds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Third {
+    Left,
+    Center,
+    Right,
+}
+
+const THIRD_CYCLE: [Third; 3] = [Third::Left, Third::Center, Third::Right];
+
+/// Partitions `usable` width into three full-height columns with no overlap
+/// and no gap: the first two columns are `floor(width / 3)`, the last one
+/// absorbs the remainder so the set exactly covers `usable.width`.
+pub fn third_rect(usable: Rect, third: Third) -> Rect {
+    let col_width = (usable.width / 3.0).floor();
+    match third {
+        Third::Left => Rect::new(usable.x, usable.y, col_width, usable.height),
+        Third::Center => Rect::new(usable.x + col_width, usable.y, col_width, usable.height),
+        Third::Right => {
+            let x = usable.x + col_width * 2.0;
+            Rect::new(x, usable.y, usable.x + usable.width - x, usable.height)
+        }
+    }
+}
+
+/// Which third `window` currently matches, if any (same tolerance as the
+/// side/corner cycle detection).
+pub fn detect_third(usable: Rect, window: Rect) -> Option<Third> {
+    THIRD_CYCLE
+        .into_iter()
+        .find(|&t| rects_match(third_rect(usable, t), window))
+}
+
+/// `snap third` with no explicit position: left → center → right → left,
+/// stateless — restarts at `left` if the window isn't currently on a third.
+pub fn next_third(current: Option<Third>) -> Third {
+    match current.and_then(|t| THIRD_CYCLE.iter().position(|&step| step == t)) {
+        Some(i) => THIRD_CYCLE[(i + 1) % THIRD_CYCLE.len()],
+        None => Third::Left,
+    }
+}
+
 /// Target for `snap display next|previous|N`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayTarget {
@@ -462,6 +504,48 @@ mod tests {
 
         let current = detect_directional_percent(SCREEN, Position::TopLeft, top_left_50);
         assert_eq!(next_cycle_percent(current), 75);
+    }
+
+    #[test]
+    fn thirds_cover_usable_width_with_no_gap_or_overlap() {
+        let usable = Rect::new(0.0, 0.0, 3440.0, 1440.0); // divisible by 3? no (1146.66)
+        let left = third_rect(usable, Third::Left);
+        let center = third_rect(usable, Third::Center);
+        let right = third_rect(usable, Third::Right);
+        assert_eq!(left.x, usable.x);
+        assert_eq!(center.x, left.x + left.width);
+        assert_eq!(right.x, center.x + center.width);
+        assert_eq!(right.x + right.width, usable.x + usable.width);
+        assert_eq!(left.height, usable.height);
+        assert_eq!(center.height, usable.height);
+        assert_eq!(right.height, usable.height);
+    }
+
+    #[test]
+    fn thirds_split_evenly_on_a_width_divisible_by_three() {
+        let usable = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        assert_eq!(third_rect(usable, Third::Left).width, 400.0);
+        assert_eq!(third_rect(usable, Third::Center).width, 400.0);
+        assert_eq!(third_rect(usable, Third::Right).width, 400.0);
+    }
+
+    #[test]
+    fn third_cycle_starts_at_left_and_advances() {
+        assert_eq!(next_third(None), Third::Left);
+        assert_eq!(next_third(Some(Third::Left)), Third::Center);
+        assert_eq!(next_third(Some(Third::Center)), Third::Right);
+        assert_eq!(next_third(Some(Third::Right)), Third::Left);
+    }
+
+    #[test]
+    fn detect_third_is_stateless() {
+        let usable = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        let center = third_rect(usable, Third::Center);
+        assert_eq!(detect_third(usable, center), Some(Third::Center));
+        assert_eq!(
+            detect_third(usable, Rect::new(10.0, 10.0, 50.0, 50.0)),
+            None
+        );
     }
 
     #[test]

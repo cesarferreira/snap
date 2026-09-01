@@ -13,8 +13,9 @@ use clap::Parser;
 use cli::{Cli, Command};
 use layout::{
     DisplayTarget, MAX_PERCENT, MIN_PERCENT, Rect, center_rect, detect_centered_percent,
-    detect_directional_percent, directional_rect, full_rect, is_supported_percent,
-    map_rect_between_displays, next_cycle_percent, padded, resolve_display_index, sized_rect,
+    detect_directional_percent, detect_third, directional_rect, full_rect, is_supported_percent,
+    map_rect_between_displays, next_cycle_percent, next_third, padded, resolve_display_index,
+    sized_rect, third_rect,
 };
 
 const EXIT_SUCCESS: u8 = 0;
@@ -128,6 +129,18 @@ fn resolve_action(cli: &Cli) -> anyhow::Result<Action> {
                 Ok(Action::Tile { gap: *gap })
             }
             Command::Display { target } => Ok(Action::Display(*target)),
+            Command::Third { position } => match position {
+                Some(third) => {
+                    let third = *third;
+                    Ok(Action::Reposition(Box::new(move |usable, _window| {
+                        third_rect(usable, third)
+                    })))
+                }
+                None => Ok(Action::Reposition(Box::new(|usable, window| {
+                    let current = detect_third(usable, window);
+                    third_rect(usable, next_third(current))
+                }))),
+            },
             _ => unreachable!("directional commands handled above"),
         };
     }

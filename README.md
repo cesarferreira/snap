@@ -166,6 +166,20 @@ Omit the size to cycle 50/75/25%, independently per corner (a `top-left 50%`
 window is never mistaken for a `left 50%` strip). `snap top-left 100` fills
 the usable area, same as `snap full`.
 
+### Thirds
+
+Full-height left/center/right thirds, handy on ultrawide displays:
+
+```bash
+snap third left
+snap third center
+snap third right
+```
+
+Omit the position to cycle left → center → right → left (`snap thirds` is an
+alias). The three columns exactly cover the usable width with no gap or
+overlap — the last column absorbs any remainder pixels.
+
 ### Commands
 
 ```bash
@@ -261,6 +275,7 @@ modifiers = ["command", "control", "option", "shift"]
 "hyper+i" = { command = "~/.cargo/bin/snap top-right" }
 "hyper+j" = { command = "~/.cargo/bin/snap bottom-left" }
 "hyper+k" = { command = "~/.cargo/bin/snap bottom-right" }
+"hyper+3" = { command = "~/.cargo/bin/snap third" }
 ```
 
 Sides omit the size so they cycle 50% → 75% → 25%. Use the absolute path:

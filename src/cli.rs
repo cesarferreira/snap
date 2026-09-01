@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::layout::{DisplayTarget, Position};
+use crate::layout::{DisplayTarget, Position, Third};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -52,6 +52,13 @@ pub enum Command {
         #[arg(long, allow_hyphen_values = true)]
         gap: Option<f64>,
     },
+    /// Anchor the focused window to a left/center/right third of the display.
+    /// Omit POSITION to cycle left → center → right → left.
+    #[command(alias = "thirds")]
+    Third {
+        #[arg(value_name = "POSITION", value_parser = parse_third)]
+        position: Option<Third>,
+    },
     /// Move the focused window to another display, preserving its relative
     /// position and size.
     Display {
@@ -59,6 +66,17 @@ pub enum Command {
         #[arg(value_name = "TARGET", value_parser = parse_display_target)]
         target: DisplayTarget,
     },
+}
+
+fn parse_third(s: &str) -> Result<Third, String> {
+    match s {
+        "left" => Ok(Third::Left),
+        "center" => Ok(Third::Center),
+        "right" => Ok(Third::Right),
+        _ => Err(format!(
+            "invalid third '{s}' (expected left, center, or right)"
+        )),
+    }
 }
 
 fn parse_display_target(s: &str) -> Result<DisplayTarget, String> {
