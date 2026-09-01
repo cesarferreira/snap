@@ -83,18 +83,43 @@ impl Window {
 
     /// Requests the given geometry. Applications may adjust the exact
     /// values (minimum/maximum window sizes); that is not itself an error
-    /// (PRD §23).
+    /// (PRD §23). But if the window genuinely can't be moved/resized to
+    /// where it needs to go, this makes no change at all rather than
+    /// applying half of it — e.g. a fixed-size window like Calculator's
+    /// would otherwise get moved into position and then fail to resize,
+    /// leaving it in a half-applied, worse-looking state than before.
     pub fn set_rect(&self, rect: Rect) -> Result<()> {
-        self.set_ax_value(
-            &position_attr(),
-            kAXValueTypeCGPoint,
-            &CGPoint::new(rect.x, rect.y),
-        )?;
-        self.set_ax_value(
-            &size_attr(),
-            kAXValueTypeCGSize,
-            &CGSize::new(rect.width, rect.height),
-        )?;
+        let debug = std::env::var_os("SNAP_DEBUG").is_some();
+        let current = self.rect()?;
+        let needs_position = !points_equal(current.x, rect.x) || !points_equal(current.y, rect.y);
+        let needs_size =
+            !points_equal(current.width, rect.width) || !points_equal(current.height, rect.height);
+
+        let position_settable = self.element.is_settable(&position_attr()).unwrap_or(false);
+        let size_settable = self.element.is_settable(&size_attr()).unwrap_or(false);
+        if debug {
+            eprintln!(
+                "[snap debug] needs_position={needs_position} (settable={position_settable}) needs_size={needs_size} (settable={size_settable})"
+            );
+        }
+        if (needs_position && !position_settable) || (needs_size && !size_settable) {
+            return Err(anyhow!("window cannot be resized"));
+        }
+
+        if needs_position {
+            self.set_ax_value(
+                &position_attr(),
+                kAXValueTypeCGPoint,
+                &CGPoint::new(rect.x, rect.y),
+            )?;
+        }
+        if needs_size {
+            self.set_ax_value(
+                &size_attr(),
+                kAXValueTypeCGSize,
+                &CGSize::new(rect.width, rect.height),
+            )?;
+        }
         Ok(())
     }
 
@@ -266,6 +291,10 @@ fn overlap_area(a: Rect, b: Rect) -> f64 {
     let x_overlap = (a.x + a.width).min(b.x + b.width) - a.x.max(b.x);
     let y_overlap = (a.y + a.height).min(b.y + b.height) - a.y.max(b.y);
     x_overlap.max(0.0) * y_overlap.max(0.0)
+}
+
+fn points_equal(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1.0
 }
 
 fn frontmost_app_pid() -> Option<pid_t> {
