@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod display;
 mod layout;
+mod spatial;
 mod tile;
 mod window;
 
@@ -17,6 +18,7 @@ use layout::{
     grow_rect, is_supported_percent, map_rect_between_displays, next_cycle_percent, next_third,
     padded, resolve_display_index, shrink_rect, sized_rect, third_rect,
 };
+use spatial::{Direction, neighbor_in_direction};
 use tile::TileLayout;
 
 const EXIT_SUCCESS: u8 = 0;
@@ -91,6 +93,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             run_display_move(target, config.padding, config.stage_manager_width)
         }
         Action::List(scope) => run_list(scope, config.stage_manager_width),
+        Action::Focus(direction) => run_focus(direction, config.stage_manager_width),
     }
 }
 
@@ -106,6 +109,7 @@ enum Action {
     },
     Display(DisplayTarget),
     List(ListScope),
+    Focus(Direction),
 }
 
 fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> {
@@ -155,6 +159,7 @@ fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> 
             }
             Command::Display { target } => Ok(Action::Display(*target)),
             Command::List { display } => Ok(Action::List(*display)),
+            Command::Focus { direction } => Ok(Action::Focus(*direction)),
             Command::Third { position } => match position {
                 Some(third) => {
                     let third = *third;
@@ -364,6 +369,42 @@ fn run_list(scope: ListScope, stage_manager_width: f64) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+/// `snap focus left|right|up|down` — raises/activates the nearest window in
+/// `direction` on the current display. Never moves or resizes a window.
+fn run_focus(direction: Direction, stage_manager_width: f64) -> anyhow::Result<()> {
+    let focused = window::Window::focused()
+        .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
+    let focused_rect = focused.rect().map_err(runtime_failure)?;
+    let target_display =
+        display::target_display_for(focused_rect, stage_manager_width).map_err(runtime_failure)?;
+
+    let mut candidates =
+        window::visible_windows_on(target_display.frame).map_err(runtime_failure)?;
+    candidates.retain(|c| !rects_roughly_equal(c.rect, focused_rect));
+
+    let rects: Vec<Rect> = candidates.iter().map(|c| c.rect).collect();
+    let index = neighbor_in_direction(focused_rect, &rects, direction).ok_or_else(|| {
+        ExitError(
+            format!("error: no window to the {}", direction_word(direction)),
+            EXIT_RUNTIME_FAILURE,
+        )
+    })?;
+
+    let target = &candidates[index];
+    target.window.raise().map_err(runtime_failure)?;
+    window::activate_app(target.pid);
+    Ok(())
+}
+
+fn direction_word(direction: Direction) -> &'static str {
+    match direction {
+        Direction::Left => "left",
+        Direction::Right => "right",
+        Direction::Up => "up",
+        Direction::Down => "down",
+    }
 }
 
 fn rects_roughly_equal(a: Rect, b: Rect) -> bool {

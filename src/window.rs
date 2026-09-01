@@ -5,7 +5,7 @@
 
 use std::ffi::c_void;
 
-use accessibility::{AXAttribute, AXUIElement, AXUIElementAttributes};
+use accessibility::{AXAttribute, AXUIElement, AXUIElementActions, AXUIElementAttributes};
 use accessibility_sys::{
     AXValueCreate, AXValueGetValue, AXValueRef, AXValueType, kAXValueTypeCGPoint,
     kAXValueTypeCGSize, pid_t,
@@ -122,6 +122,15 @@ impl Window {
             )?;
         }
         Ok(())
+    }
+
+    /// AX-raises this window within its application's z-order. Combine with
+    /// [`activate_app`] to also bring the owning application frontmost, so
+    /// the window actually becomes key (PRD: spatial focus, accordion).
+    pub fn raise(&self) -> Result<()> {
+        self.element
+            .raise()
+            .map_err(|_| anyhow!("cannot raise window"))
     }
 
     fn get_ax_value<T: Copy + Default>(
@@ -335,5 +344,21 @@ pub fn frontmost_app_pid() -> Option<pid_t> {
         }
         let pid: pid_t = msg_send![app, processIdentifier];
         Some(pid)
+    }
+}
+
+/// Brings the application owning `pid` frontmost, without moving the mouse
+/// or touching Spaces. Combine with [`Window::raise`] so a specific window
+/// (not just "some window of this app") becomes key — two Safari windows
+/// are otherwise indistinguishable to `NSRunningApplication::activate`.
+pub fn activate_app(pid: pid_t) {
+    const NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS: u64 = 1 << 1;
+    unsafe {
+        let app: id =
+            msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier: pid];
+        if !app.is_null() {
+            let _: bool =
+                msg_send![app, activateWithOptions: NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS];
+        }
     }
 }

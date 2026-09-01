@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 
 use crate::layout::{DisplayTarget, Position, Third};
+use crate::spatial::Direction;
 use crate::tile::TileLayout;
 
 #[derive(Parser, Debug)]
@@ -78,6 +79,12 @@ pub enum Command {
         /// or list every attached display.
         #[arg(long, value_enum, default_value = "current")]
         display: ListScope,
+    },
+    /// Focus/raise the nearest window in a direction on the current
+    /// display, without moving or resizing anything.
+    Focus {
+        #[arg(value_enum)]
+        direction: Direction,
     },
     /// Move the focused window to another display, preserving its relative
     /// position and size.

@@ -250,6 +250,23 @@ ID       APP                  DISPLAY FOCUSED TITLE
 `TITLE` is best-effort — macOS withholds window titles without Screen
 Recording permission. No window is moved.
 
+### Spatial focus
+
+Raise/activate the nearest window in a direction on the current display,
+without moving or resizing anything — vim-style motion between panes:
+
+```bash
+snap focus left
+snap focus right
+snap focus up
+snap focus down
+```
+
+Neighbor picking uses the window centers: nearest wins, ties break by larger
+overlap on the perpendicular axis. No wrap to the other side of the screen
+and no jumping to another display — an edge is a dead end. `error: no window
+to the left` (etc.), exit 1, if nothing qualifies.
+
 ### Multi-monitor
 
 Move the focused window to another display, keeping its relative position
@@ -328,14 +345,18 @@ modifiers = ["command", "control", "option", "shift"]
 "left_option+command+up" = { command = "~/.cargo/bin/snap top" }
 "left_option+command+down" = { command = "~/.cargo/bin/snap bottom" }
 "hyper+n" = { command = "~/.cargo/bin/snap display next" }
-"hyper+u" = { command = "~/.cargo/bin/snap top-left" }
-"hyper+i" = { command = "~/.cargo/bin/snap top-right" }
-"hyper+j" = { command = "~/.cargo/bin/snap bottom-left" }
-"hyper+k" = { command = "~/.cargo/bin/snap bottom-right" }
+"hyper+7" = { command = "~/.cargo/bin/snap top-left" }
+"hyper+8" = { command = "~/.cargo/bin/snap top-right" }
+"hyper+9" = { command = "~/.cargo/bin/snap bottom-left" }
+"hyper+0" = { command = "~/.cargo/bin/snap bottom-right" }
 "hyper+3" = { command = "~/.cargo/bin/snap third" }
 "hyper+equal" = { command = "~/.cargo/bin/snap grow" }
 "hyper+minus" = { command = "~/.cargo/bin/snap shrink" }
 "hyper+return" = { command = "~/.cargo/bin/snap almost" }
+"hyper+h" = { command = "~/.cargo/bin/snap focus left" }
+"hyper+l" = { command = "~/.cargo/bin/snap focus right" }
+"hyper+k" = { command = "~/.cargo/bin/snap focus up" }
+"hyper+j" = { command = "~/.cargo/bin/snap focus down" }
 ```
 
 Sides omit the size so they cycle 50% → 75% → 25%. Use the absolute path:
