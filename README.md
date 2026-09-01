@@ -163,6 +163,23 @@ current display is affected — other monitors are left alone.
 snap tile --gap 24   # override the gap between tiles for this run
 ```
 
+### Multi-monitor
+
+Move the focused window to another display, keeping its relative position
+and size (e.g. left-50% on display A becomes left-50% on display B):
+
+```bash
+snap display next       # cycle to the next display, wrapping around
+snap display previous
+snap display 1          # 1-based index among currently attached displays
+```
+
+Displays are ordered left-to-right, then top-to-bottom (ties broken by
+`NSScreen` order) — the same order `snap display N` indexes into. Spaces,
+native fullscreen, and other windows/displays are left untouched. With only
+one display attached, `next`/`previous` fail with `error: only one display`
+(exit 1) instead of silently doing nothing.
+
 ### Output & exit codes
 
 Successful commands print nothing, so snap is safe to bind to hotkeys and use
@@ -218,6 +235,7 @@ modifiers = ["command", "control", "option", "shift"]
 "left_option+command+right" = { command = "~/.cargo/bin/snap right" }
 "left_option+command+up" = { command = "~/.cargo/bin/snap top" }
 "left_option+command+down" = { command = "~/.cargo/bin/snap bottom" }
+"hyper+n" = { command = "~/.cargo/bin/snap display next" }
 ```
 
 Sides omit the size so they cycle 50% → 75% → 25%. Use the absolute path:

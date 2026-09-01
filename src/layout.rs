@@ -141,6 +141,71 @@ pub fn detect_centered_percent(usable: Rect, window: Rect) -> Option<u32> {
         .find(|&p| rects_match(sized_rect(usable, p), window))
 }
 
+/// Target for `snap display next|previous|N`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayTarget {
+    Next,
+    Previous,
+    /// 1-based index, as typed by the user.
+    Index(u32),
+}
+
+/// Resolves `target` to a 0-based index into a `count`-long, already-ordered
+/// display list, given the 0-based index of the display the window is
+/// currently on. Returns `None` for an out-of-range explicit index or an
+/// empty display list.
+pub fn resolve_display_index(current: usize, count: usize, target: DisplayTarget) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    match target {
+        DisplayTarget::Next => Some((current + 1) % count),
+        DisplayTarget::Previous => Some((current + count - 1) % count),
+        DisplayTarget::Index(n) => {
+            if n >= 1 && (n as usize) <= count {
+                Some(n as usize - 1)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Maps `window`'s frame from `from_usable` to `to_usable`, preserving its
+/// relative position and size (PRD-style proportional move across
+/// displays), then clamps so the result stays fully inside `to_usable` even
+/// when the destination is smaller than the window.
+pub fn map_rect_between_displays(window: Rect, from_usable: Rect, to_usable: Rect) -> Rect {
+    let rel_x = if from_usable.width > 0.0 {
+        (window.x - from_usable.x) / from_usable.width
+    } else {
+        0.0
+    };
+    let rel_y = if from_usable.height > 0.0 {
+        (window.y - from_usable.y) / from_usable.height
+    } else {
+        0.0
+    };
+    let rel_w = if from_usable.width > 0.0 {
+        window.width / from_usable.width
+    } else {
+        1.0
+    };
+    let rel_h = if from_usable.height > 0.0 {
+        window.height / from_usable.height
+    } else {
+        1.0
+    };
+
+    let width = (rel_w * to_usable.width).min(to_usable.width);
+    let height = (rel_h * to_usable.height).min(to_usable.height);
+    let x = (to_usable.x + rel_x * to_usable.width)
+        .clamp(to_usable.x, to_usable.x + to_usable.width - width);
+    let y = (to_usable.y + rel_y * to_usable.height)
+        .clamp(to_usable.y, to_usable.y + to_usable.height - height);
+    Rect::new(x, y, width, height)
+}
+
 /// Shrinks `usable` by `padding` on every side. Applied uniformly before any
 /// layout calculation so every command respects the configured screen-edge
 /// padding, not just `tile`. Clamped so padding can never invert the rect.
@@ -367,6 +432,75 @@ mod tests {
     fn detect_centered_percent_matches_current_step() {
         let window = sized_rect(SCREEN, 75);
         assert_eq!(detect_centered_percent(SCREEN, window), Some(75));
+    }
+
+    #[test]
+    fn resolve_display_index_next_wraps() {
+        assert_eq!(resolve_display_index(0, 3, DisplayTarget::Next), Some(1));
+        assert_eq!(resolve_display_index(2, 3, DisplayTarget::Next), Some(0));
+    }
+
+    #[test]
+    fn resolve_display_index_previous_wraps() {
+        assert_eq!(
+            resolve_display_index(0, 3, DisplayTarget::Previous),
+            Some(2)
+        );
+        assert_eq!(
+            resolve_display_index(1, 3, DisplayTarget::Previous),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn resolve_display_index_explicit_index_is_one_based() {
+        assert_eq!(
+            resolve_display_index(0, 3, DisplayTarget::Index(1)),
+            Some(0)
+        );
+        assert_eq!(
+            resolve_display_index(0, 3, DisplayTarget::Index(3)),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn resolve_display_index_rejects_out_of_range() {
+        assert_eq!(resolve_display_index(0, 3, DisplayTarget::Index(0)), None);
+        assert_eq!(resolve_display_index(0, 3, DisplayTarget::Index(4)), None);
+    }
+
+    #[test]
+    fn map_rect_between_displays_preserves_relative_position() {
+        let from = Rect::new(0.0, 0.0, 1000.0, 1000.0);
+        let to = Rect::new(2000.0, 0.0, 2000.0, 1000.0);
+        let window = Rect::new(0.0, 0.0, 500.0, 500.0); // left-50%
+        let mapped = map_rect_between_displays(window, from, to);
+        assert_eq!(mapped, Rect::new(2000.0, 0.0, 1000.0, 500.0));
+    }
+
+    #[test]
+    fn map_rect_between_displays_handles_negative_origin_and_different_scale() {
+        let from = Rect::new(-1920.0, 0.0, 1920.0, 1080.0);
+        let to = Rect::new(0.0, 0.0, 1728.0, 1117.0);
+        let window = Rect::new(-1920.0 + 960.0, 0.0, 960.0, 1080.0); // right-50% of A
+        let mapped = map_rect_between_displays(window, from, to);
+        assert_eq!(mapped.x, 864.0);
+        assert_eq!(mapped.width, 864.0);
+        assert_eq!(mapped.height, 1117.0);
+    }
+
+    #[test]
+    fn map_rect_between_displays_clamps_oversized_window_into_smaller_destination() {
+        let from = Rect::new(0.0, 0.0, 3440.0, 1440.0);
+        let to = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let window = Rect::new(0.0, 0.0, 3440.0, 1440.0); // full on A
+        let mapped = map_rect_between_displays(window, from, to);
+        assert_eq!(mapped, to);
+        assert!(mapped.x >= to.x);
+        assert!(mapped.y >= to.y);
+        assert!(mapped.x + mapped.width <= to.x + to.width + 1e-9);
+        assert!(mapped.y + mapped.height <= to.y + to.height + 1e-9);
     }
 
     #[test]

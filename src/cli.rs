@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::layout::Position;
+use crate::layout::{DisplayTarget, Position};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -40,6 +40,23 @@ pub enum Command {
         #[arg(long, allow_hyphen_values = true)]
         gap: Option<f64>,
     },
+    /// Move the focused window to another display, preserving its relative
+    /// position and size.
+    Display {
+        /// `next`, `previous`, or a 1-based display index.
+        #[arg(value_name = "TARGET", value_parser = parse_display_target)]
+        target: DisplayTarget,
+    },
+}
+
+fn parse_display_target(s: &str) -> Result<DisplayTarget, String> {
+    match s {
+        "next" => Ok(DisplayTarget::Next),
+        "previous" => Ok(DisplayTarget::Previous),
+        _ => s.parse::<u32>().map(DisplayTarget::Index).map_err(|_| {
+            format!("invalid display target '{s}' (expected next, previous, or a display number)")
+        }),
+    }
 }
 
 impl Command {

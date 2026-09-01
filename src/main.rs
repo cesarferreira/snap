@@ -12,8 +12,9 @@ use clap::Parser;
 
 use cli::{Cli, Command};
 use layout::{
-    Rect, SUPPORTED_PERCENTS, center_rect, detect_centered_percent, detect_directional_percent,
-    directional_rect, full_rect, is_supported_percent, next_cycle_percent, padded, sized_rect,
+    DisplayTarget, Rect, SUPPORTED_PERCENTS, center_rect, detect_centered_percent,
+    detect_directional_percent, directional_rect, full_rect, is_supported_percent,
+    map_rect_between_displays, next_cycle_percent, padded, resolve_display_index, sized_rect,
 };
 
 const EXIT_SUCCESS: u8 = 0;
@@ -80,6 +81,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Action::Reposition(compute) => {
             run_reposition(compute, config.padding, config.stage_manager_width)
         }
+        Action::Display(target) => {
+            run_display_move(target, config.padding, config.stage_manager_width)
+        }
     }
 }
 
@@ -90,6 +94,7 @@ type ComputeRect = Box<dyn Fn(Rect, Rect) -> Rect>;
 enum Action {
     Reposition(ComputeRect),
     Tile { gap: Option<f64> },
+    Display(DisplayTarget),
 }
 
 fn resolve_action(cli: &Cli) -> anyhow::Result<Action> {
@@ -122,6 +127,7 @@ fn resolve_action(cli: &Cli) -> anyhow::Result<Action> {
                 }
                 Ok(Action::Tile { gap: *gap })
             }
+            Command::Display { target } => Ok(Action::Display(*target)),
             _ => unreachable!("directional commands handled above"),
         };
     }
@@ -181,6 +187,35 @@ fn run_reposition(
         );
     }
     target.set_rect(rect).map_err(runtime_failure)
+}
+
+fn run_display_move(
+    target: DisplayTarget,
+    padding: f64,
+    stage_manager_width: f64,
+) -> anyhow::Result<()> {
+    let focused = window::Window::focused()
+        .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
+    let window_rect = focused.rect().map_err(runtime_failure)?;
+
+    let displays = display::ordered_displays(stage_manager_width).map_err(runtime_failure)?;
+    if displays.len() == 1 && matches!(target, DisplayTarget::Next | DisplayTarget::Previous) {
+        return Err(ExitError("error: only one display".into(), EXIT_RUNTIME_FAILURE).into());
+    }
+
+    let current_index = display::display_index_containing(&displays, window_rect);
+    let dest_index =
+        resolve_display_index(current_index, displays.len(), target).ok_or_else(|| {
+            invalid_args(format!(
+                "error: invalid display target\n\ndisplays currently attached: {}",
+                displays.len()
+            ))
+        })?;
+
+    let from_usable = padded(displays[current_index].usable, padding);
+    let to_usable = padded(displays[dest_index].usable, padding);
+    let new_rect = map_rect_between_displays(window_rect, from_usable, to_usable);
+    focused.set_rect(new_rect).map_err(runtime_failure)
 }
 
 fn run_tile(gap: f64, stage_manager_width: f64) -> anyhow::Result<()> {
