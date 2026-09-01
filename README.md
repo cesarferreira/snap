@@ -3,7 +3,7 @@
 
   <p><strong>Window management from the terminal.</strong></p>
 
-  <pre>
+  <pre align="left">
 $ snap left      # cycle left 50% / left 75% / left 25%
 $ snap           # cycle 50% / 75% / 25%, centered
 $ snap full      # fill the current display
