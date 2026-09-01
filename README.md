@@ -267,6 +267,24 @@ overlap on the perpendicular axis. No wrap to the other side of the screen
 and no jumping to another display — an edge is a dead end. `error: no window
 to the left` (etc.), exit 1, if nothing qualifies.
 
+### Swap neighbor
+
+Exchange frames with the nearest window in a direction — how you rotate
+which window sits in the "master" slot after `snap tile`, without a
+retile:
+
+```bash
+snap swap left
+snap swap right
+snap swap up
+snap swap down
+```
+
+Same neighbor picker as `snap focus`. Focus stays on the originally focused
+window — it just moved. No wrap-around, no crossing displays. If a window
+can't be resized, the whole swap aborts and any already-applied half is
+restored on a best-effort basis.
+
 ### Multi-monitor
 
 Move the focused window to another display, keeping its relative position
@@ -357,6 +375,10 @@ modifiers = ["command", "control", "option", "shift"]
 "hyper+l" = { command = "~/.cargo/bin/snap focus right" }
 "hyper+k" = { command = "~/.cargo/bin/snap focus up" }
 "hyper+j" = { command = "~/.cargo/bin/snap focus down" }
+"hyper+shift+left" = { command = "~/.cargo/bin/snap swap left" }
+"hyper+shift+right" = { command = "~/.cargo/bin/snap swap right" }
+"hyper+shift+up" = { command = "~/.cargo/bin/snap swap up" }
+"hyper+shift+down" = { command = "~/.cargo/bin/snap swap down" }
 ```
 
 Sides omit the size so they cycle 50% → 75% → 25%. Use the absolute path:

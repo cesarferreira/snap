@@ -94,6 +94,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Action::List(scope) => run_list(scope, config.stage_manager_width),
         Action::Focus(direction) => run_focus(direction, config.stage_manager_width),
+        Action::Swap(direction) => run_swap(direction, config.stage_manager_width),
     }
 }
 
@@ -110,6 +111,7 @@ enum Action {
     Display(DisplayTarget),
     List(ListScope),
     Focus(Direction),
+    Swap(Direction),
 }
 
 fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> {
@@ -160,6 +162,7 @@ fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> 
             Command::Display { target } => Ok(Action::Display(*target)),
             Command::List { display } => Ok(Action::List(*display)),
             Command::Focus { direction } => Ok(Action::Focus(*direction)),
+            Command::Swap { direction } => Ok(Action::Swap(*direction)),
             Command::Third { position } => match position {
                 Some(third) => {
                     let third = *third;
@@ -395,6 +398,41 @@ fn run_focus(direction: Direction, stage_manager_width: f64) -> anyhow::Result<(
     let target = &candidates[index];
     target.window.raise().map_err(runtime_failure)?;
     window::activate_app(target.pid);
+    Ok(())
+}
+
+/// `snap swap left|right|up|down` — exchanges frames with the nearest
+/// window in `direction` on the current display. Focus stays on the
+/// originally focused window (it just moved).
+fn run_swap(direction: Direction, stage_manager_width: f64) -> anyhow::Result<()> {
+    let focused = window::Window::focused()
+        .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
+    let focused_rect = focused.rect().map_err(runtime_failure)?;
+    let target_display =
+        display::target_display_for(focused_rect, stage_manager_width).map_err(runtime_failure)?;
+
+    let mut candidates =
+        window::visible_windows_on(target_display.frame).map_err(runtime_failure)?;
+    candidates.retain(|c| !rects_roughly_equal(c.rect, focused_rect));
+
+    let rects: Vec<Rect> = candidates.iter().map(|c| c.rect).collect();
+    let index = neighbor_in_direction(focused_rect, &rects, direction).ok_or_else(|| {
+        ExitError(
+            format!("error: no window to the {}", direction_word(direction)),
+            EXIT_RUNTIME_FAILURE,
+        )
+    })?;
+
+    let neighbor = &candidates[index];
+    let neighbor_rect = neighbor.rect;
+
+    focused.set_rect(neighbor_rect).map_err(runtime_failure)?;
+    if let Err(err) = neighbor.window.set_rect(focused_rect) {
+        // Best-effort restore: the first half already moved, so put the
+        // focused window back rather than leaving a half-applied swap.
+        let _ = focused.set_rect(focused_rect);
+        return Err(runtime_failure(err));
+    }
     Ok(())
 }
 

@@ -86,6 +86,13 @@ pub enum Command {
         #[arg(value_enum)]
         direction: Direction,
     },
+    /// Exchange frames with the nearest window in a direction on the
+    /// current display. Focus stays on the (now-moved) originally focused
+    /// window.
+    Swap {
+        #[arg(value_enum)]
+        direction: Direction,
+    },
     /// Move the focused window to another display, preserving its relative
     /// position and size.
     Display {
