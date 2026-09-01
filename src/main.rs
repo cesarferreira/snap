@@ -142,6 +142,8 @@ fn run_reposition(compute: ComputeRect) -> anyhow::Result<()> {
 }
 
 fn run_tile(gap: f64) -> anyhow::Result<()> {
+    let debug = std::env::var_os("SNAP_DEBUG").is_some();
+
     let focused = window::Window::focused()
         .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
     let focused_rect = focused.rect().map_err(runtime_failure)?;
@@ -157,10 +159,19 @@ fn run_tile(gap: f64) -> anyhow::Result<()> {
     }];
     ordered.extend(candidates);
 
+    if debug {
+        eprintln!("[snap debug] usable={:?}", target_display.usable);
+        eprintln!("[snap debug] {} window(s) to tile", ordered.len());
+    }
+
     let rects = tile::tile_rects(target_display.usable, ordered.len(), gap);
     for (candidate, rect) in ordered.into_iter().zip(rects) {
         // An individual unmanageable window is skipped, not fatal (PRD §23).
-        let _ = candidate.window.set_rect(rect);
+        let result = candidate.window.set_rect(rect);
+        if debug {
+            let after = candidate.window.rect();
+            eprintln!("[snap debug] requested={rect:?} set_rect={result:?} actual_after={after:?}");
+        }
     }
     Ok(())
 }
