@@ -72,7 +72,7 @@ pub fn all_displays(stage_manager_width: f64) -> Result<Vec<Display>> {
 /// Reads `GloballyEnabled` from the `com.apple.WindowManager` preference
 /// domain — the same flag System Settings → Desktop & Dock → Stage Manager
 /// toggles (verified via `defaults read com.apple.WindowManager`).
-fn stage_manager_enabled() -> bool {
+pub fn stage_manager_enabled() -> bool {
     unsafe {
         let key = CFString::from_static_string("GloballyEnabled");
         let app_id = CFString::from_static_string("com.apple.WindowManager");
@@ -115,4 +115,103 @@ pub fn target_display_for(window_rect: Rect, stage_manager_width: f64) -> Result
         })
         .expect("all_displays returns at least one display or errors");
     Ok(displays.into_iter().nth(best_index).unwrap())
+}
+
+/// Every active display in a stable order: left-to-right, then
+/// top-to-bottom, tie-broken by the original `NSScreen.screens()` array
+/// index (index 0 is guaranteed to be the menu-bar display). Used by
+/// `snap display next/previous/N` so the ordering is documented and doesn't
+/// silently change between two invocations.
+pub fn ordered_displays(stage_manager_width: f64) -> Result<Vec<Display>> {
+    Ok(order_displays(all_displays(stage_manager_width)?))
+}
+
+fn order_displays(displays: Vec<Display>) -> Vec<Display> {
+    let mut indexed: Vec<(usize, Display)> = displays.into_iter().enumerate().collect();
+    indexed.sort_by(|(ia, a), (ib, b)| {
+        a.frame
+            .x
+            .partial_cmp(&b.frame.x)
+            .unwrap()
+            .then(a.frame.y.partial_cmp(&b.frame.y).unwrap())
+            .then(ia.cmp(ib))
+    });
+    indexed.into_iter().map(|(_, d)| d).collect()
+}
+
+/// Index into `displays` (as returned by [`ordered_displays`]) of the one
+/// containing the largest portion of `window_rect`. Ties keep the
+/// lower/earlier index. Falls back to `0` if `window_rect` overlaps nothing
+/// (e.g. it's positioned fully off-screen) — `displays` is never empty in
+/// practice since `all_displays` errors instead of returning zero.
+pub fn display_index_containing(displays: &[Display], window_rect: Rect) -> usize {
+    let mut best_index = 0;
+    let mut best_overlap = -1.0;
+    for (i, d) in displays.iter().enumerate() {
+        let overlap = overlap_area(d.frame, window_rect);
+        if overlap > best_overlap {
+            best_overlap = overlap;
+            best_index = i;
+        }
+    }
+    best_index
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn display(x: f64, y: f64, w: f64, h: f64) -> Display {
+        Display {
+            frame: Rect::new(x, y, w, h),
+            usable: Rect::new(x, y, w, h),
+        }
+    }
+
+    #[test]
+    fn order_displays_sorts_left_to_right() {
+        let left = display(0.0, 0.0, 1000.0, 800.0);
+        let right = display(1000.0, 0.0, 1000.0, 800.0);
+        let ordered = order_displays(vec![right, left]);
+        assert_eq!(ordered[0].frame.x, 0.0);
+        assert_eq!(ordered[1].frame.x, 1000.0);
+    }
+
+    #[test]
+    fn order_displays_handles_negative_origin() {
+        let a = display(-1920.0, 0.0, 1920.0, 1080.0);
+        let b = display(0.0, 0.0, 1728.0, 1117.0);
+        let ordered = order_displays(vec![b, a]);
+        assert_eq!(ordered[0].frame.x, -1920.0);
+        assert_eq!(ordered[1].frame.x, 0.0);
+    }
+
+    #[test]
+    fn order_displays_breaks_ties_by_original_index() {
+        let a = display(0.0, 0.0, 1000.0, 800.0);
+        let b = display(0.0, 0.0, 1000.0, 800.0);
+        let ordered = order_displays(vec![a, b]);
+        // Same frame: original order (index 0 first) is preserved.
+        assert_eq!(ordered.len(), 2);
+    }
+
+    #[test]
+    fn display_index_containing_picks_largest_overlap() {
+        let displays = vec![
+            display(0.0, 0.0, 1000.0, 800.0),
+            display(1000.0, 0.0, 1000.0, 800.0),
+        ];
+        let window = Rect::new(1200.0, 0.0, 400.0, 400.0);
+        assert_eq!(display_index_containing(&displays, window), 1);
+    }
+
+    #[test]
+    fn display_index_containing_falls_back_to_zero_when_off_screen() {
+        let displays = vec![
+            display(0.0, 0.0, 1000.0, 800.0),
+            display(1000.0, 0.0, 1000.0, 800.0),
+        ];
+        let window = Rect::new(-5000.0, -5000.0, 100.0, 100.0);
+        assert_eq!(display_index_containing(&displays, window), 0);
+    }
 }

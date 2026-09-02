@@ -5,7 +5,7 @@
 
 use std::ffi::c_void;
 
-use accessibility::{AXAttribute, AXUIElement, AXUIElementAttributes};
+use accessibility::{AXAttribute, AXUIElement, AXUIElementActions, AXUIElementAttributes};
 use accessibility_sys::{
     AXValueCreate, AXValueGetValue, AXValueRef, AXValueType, kAXValueTypeCGPoint,
     kAXValueTypeCGSize, pid_t,
@@ -16,11 +16,12 @@ use core_foundation::base::{CFType, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::number::{CFNumber, CFNumberRef};
-use core_foundation::string::CFString;
+use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::geometry::{CGPoint, CGSize};
 use core_graphics::window::{
     copy_window_info, kCGWindowBounds, kCGWindowLayer, kCGWindowListExcludeDesktopElements,
-    kCGWindowListOptionOnScreenOnly, kCGWindowOwnerPID,
+    kCGWindowListOptionOnScreenOnly, kCGWindowName, kCGWindowNumber, kCGWindowOwnerName,
+    kCGWindowOwnerPID,
 };
 use objc::{class, msg_send, sel, sel_impl};
 
@@ -123,6 +124,15 @@ impl Window {
         Ok(())
     }
 
+    /// AX-raises this window within its application's z-order. Combine with
+    /// [`activate_app`] to also bring the owning application frontmost, so
+    /// the window actually becomes key (PRD: spatial focus, accordion).
+    pub fn raise(&self) -> Result<()> {
+        self.element
+            .raise()
+            .map_err(|_| anyhow!("cannot raise window"))
+    }
+
     fn get_ax_value<T: Copy + Default>(
         &self,
         attr: &AXAttribute<CFType>,
@@ -166,6 +176,18 @@ impl Window {
 pub struct TileCandidate {
     pub window: Window,
     pub rect: Rect,
+    /// Owning application's pid.
+    pub pid: pid_t,
+    /// `kCGWindowOwnerName` — the owning application's name, as CGWindowList
+    /// reports it (matches what Activity Monitor shows).
+    pub app_name: String,
+    /// `kCGWindowName` — the window's title. Often empty without Screen
+    /// Recording permission (macOS withholds it since 10.15); best-effort.
+    pub title: Option<String>,
+    /// `kCGWindowNumber` — stable for the life of the window (until closed),
+    /// unlike the rect-matching used to find its `AXUIElement`. The
+    /// identity later features (e.g. undo) should key on, per its own issue.
+    pub window_number: i64,
 }
 
 /// Enumerates normal, visible, resizable application windows overlapping
@@ -227,11 +249,21 @@ pub fn visible_windows_on(display_frame: Rect) -> Result<Vec<TileCandidate>> {
         if !is_tileable(&element) {
             continue;
         }
+        let app_name =
+            dict_string(&dict, unsafe { kCGWindowOwnerName } as *const c_void).unwrap_or_default();
+        let title =
+            dict_string(&dict, unsafe { kCGWindowName } as *const c_void).filter(|t| !t.is_empty());
+        let window_number =
+            dict_i64(&dict, unsafe { kCGWindowNumber } as *const c_void).unwrap_or(-1);
         candidates.push(TileCandidate {
             window: Window {
                 element: (*element).clone(),
             },
             rect: cg_bounds,
+            pid: pid as pid_t,
+            app_name,
+            title,
+            window_number,
         });
     }
 
@@ -257,6 +289,12 @@ fn dict_i64(dict: &CFDictionary, key: *const c_void) -> Option<i64> {
     let value_ptr = dict.find(key)?;
     let number = unsafe { CFNumber::wrap_under_get_rule(*value_ptr as CFNumberRef) };
     number.to_i64()
+}
+
+fn dict_string(dict: &CFDictionary, key: *const c_void) -> Option<String> {
+    let value_ptr = dict.find(key)?;
+    let string = unsafe { CFString::wrap_under_get_rule(*value_ptr as CFStringRef) };
+    Some(string.to_string())
 }
 
 fn dict_bounds(dict: &CFDictionary) -> Option<Rect> {
@@ -297,7 +335,7 @@ fn points_equal(a: f64, b: f64) -> bool {
     (a - b).abs() < 1.0
 }
 
-fn frontmost_app_pid() -> Option<pid_t> {
+pub fn frontmost_app_pid() -> Option<pid_t> {
     unsafe {
         let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
         let app: id = msg_send![workspace, frontmostApplication];
@@ -306,5 +344,21 @@ fn frontmost_app_pid() -> Option<pid_t> {
         }
         let pid: pid_t = msg_send![app, processIdentifier];
         Some(pid)
+    }
+}
+
+/// Brings the application owning `pid` frontmost, without moving the mouse
+/// or touching Spaces. Combine with [`Window::raise`] so a specific window
+/// (not just "some window of this app") becomes key — two Safari windows
+/// are otherwise indistinguishable to `NSRunningApplication::activate`.
+pub fn activate_app(pid: pid_t) {
+    const NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS: u64 = 1 << 1;
+    unsafe {
+        let app: id =
+            msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier: pid];
+        if !app.is_null() {
+            let _: bool =
+                msg_send![app, activateWithOptions: NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS];
+        }
     }
 }

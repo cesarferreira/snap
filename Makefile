@@ -1,4 +1,4 @@
-.PHONY: all build build-release install install-release clean test check fmt lint run demo release
+.PHONY: all build build-release install install-release clean test check fmt lint run demo release formula-sha256
 
 LEVEL ?= minor
 
@@ -55,3 +55,13 @@ demo: install
 # Bump version, regenerate CHANGELOG.md, tag, publish, and push (requires cargo-release + git-cliff)
 release:
 	cargo release $(LEVEL) --execute --no-confirm
+
+# Print sha256 checksums for the current version's release tarballs, to
+# paste into Formula/snap.rb (Homebrew release checklist). Run this after
+# `make release` once CI has published the new tag's artifacts.
+formula-sha256:
+	@version=$$(grep '^version' Cargo.toml | head -1 | cut -d '"' -f2); \
+	for target in aarch64-apple-darwin x86_64-apple-darwin; do \
+		url="https://github.com/cesarferreira/snap/releases/download/v$$version/snap-$$target.tar.gz"; \
+		echo "$$target: $$(curl -sL $$url | shasum -a 256 | cut -d' ' -f1)"; \
+	done
