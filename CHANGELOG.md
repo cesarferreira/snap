@@ -2,8 +2,50 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.1.0] - 2026-01-01
+## [0.2.0] - 2026-09-02
 
 ### 🚀 Features
 
-- Initial release
+- Cycle 25/50/75% when SIZE is omitted
+- Add snap display next/previous/N ([#1](https://github.com/cesarferreira/snap/issues/1))
+- Allow arbitrary 1-100 percent sizes ([#5](https://github.com/cesarferreira/snap/issues/5))
+- Add corner anchors top-left/top-right/bottom-left/bottom-right ([#2](https://github.com/cesarferreira/snap/issues/2))
+- Add snap third left/center/right with cycle ([#7](https://github.com/cesarferreira/snap/issues/7))
+- Add snap grow/shrink/almost ([#6](https://github.com/cesarferreira/snap/issues/6))
+- Add snap list ([#3](https://github.com/cesarferreira/snap/issues/3))
+- Add snap tile columns/rows/master variants ([#8](https://github.com/cesarferreira/snap/issues/8))
+- Add snap focus and shared spatial neighbor picker ([#13](https://github.com/cesarferreira/snap/issues/13))
+- Add snap swap left/right/up/down ([#12](https://github.com/cesarferreira/snap/issues/12))
+- Add snap stack accordion ([#14](https://github.com/cesarferreira/snap/issues/14))
+- Add --app to target a window by application name ([#4](https://github.com/cesarferreira/snap/issues/4))
+- Add snap undo with on-disk last-rect cache ([#9](https://github.com/cesarferreira/snap/issues/9))
+- Add snap doctor diagnostic command ([#10](https://github.com/cesarferreira/snap/issues/10))
+
+### 🐛 Bug Fixes
+
+- Avoid partially moving windows that can't be resized
+- Enter the size cycle at 50% instead of 25%
+- Widen cross-source rect-match tolerance to 2.0
+
+### 💼 Other
+
+- First commit
+- Tiling works
+- Tiling padding
+- Stage manager padding
+- Remove Development section from README
+- Renamed package
+- Add emoji to project title in README
+- Example
+- Changed readme
+- Changed readme
+- Changed readme
+
+### 📚 Documentation
+
+- Rewrite README to cover command surface, config, and Stage Manager support
+
+### ⚙️ Miscellaneous Tasks
+
+- Build and test on macOS instead of Linux/Windows
+- Add Homebrew formula + release checklist ([#11](https://github.com/cesarferreira/snap/issues/11))
