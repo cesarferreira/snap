@@ -4,6 +4,7 @@ mod ax;
 mod cli;
 mod config;
 mod display;
+mod error_log;
 mod focus_watch;
 mod history;
 mod launchd;
@@ -39,11 +40,14 @@ fn main() -> ExitCode {
         Err(err) => {
             if let Some(exit_err) = err.downcast_ref::<ExitError>() {
                 if !exit_err.0.to_string().is_empty() {
+                    error_log::record("cli", &exit_err.0);
                     eprintln!("{}", exit_err.0);
                 }
                 return ExitCode::from(exit_err.1);
             }
-            eprintln!("error: {err}");
+            let message = format!("error: {err}");
+            error_log::record("cli", &message);
+            eprintln!("{message}");
             ExitCode::from(EXIT_RUNTIME_FAILURE)
         }
     }
@@ -456,6 +460,10 @@ fn run_doctor(config: &config::Config, stage_manager_width: f64) -> anyhow::Resu
     println!("  stage_manager_width = {}", config.stage_manager_width);
     println!("  almost_padding = {}", config.almost_padding);
     println!("  accordion_padding = {}", config.accordion_padding);
+    match error_log::path() {
+        Some(path) => println!("Error log: {}", path.display()),
+        None => println!("Error log: unavailable ($HOME not set)"),
+    }
 
     println!();
     match launchd::status() {

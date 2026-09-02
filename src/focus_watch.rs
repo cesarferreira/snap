@@ -28,6 +28,7 @@ use objc2_app_kit::{NSApplication, NSWorkspace, NSWorkspaceDidActivateApplicatio
 use objc2_foundation::NSNotification;
 
 use crate::ax::{AXObserver, AXUIElement};
+use crate::error_log;
 use crate::history;
 use crate::window;
 
@@ -83,6 +84,7 @@ fn attach_and_record(observer_slot: &Rc<RefCell<Option<AXObserver>>>) {
     record_current_focus();
 
     let Some(pid) = window::frontmost_app_pid() else {
+        error_log::record("daemon", "attach_and_record: no frontmost app pid");
         if debug {
             eprintln!("[snap debug] daemon: no frontmost app pid");
         }
@@ -91,6 +93,10 @@ fn attach_and_record(observer_slot: &Rc<RefCell<Option<AXObserver>>>) {
     match attach_focused_window_observer(pid) {
         Ok(observer) => *observer_slot.borrow_mut() = Some(observer),
         Err(e) => {
+            error_log::record(
+                "daemon",
+                &format!("attach_focused_window_observer failed for pid {pid}: {e}"),
+            );
             if debug {
                 eprintln!("[snap debug] daemon: attach_focused_window_observer failed: {e}");
             }
@@ -129,26 +135,47 @@ unsafe extern "C" fn on_focused_window_changed(
 fn record_current_focus() {
     let debug = std::env::var_os("SNAP_DEBUG").is_some();
     let Some(pid) = window::frontmost_app_pid() else {
+        error_log::record("daemon", "record_current_focus: no frontmost app pid");
         if debug {
             eprintln!("[snap debug] daemon: record_current_focus: no frontmost app pid");
         }
         return;
     };
-    let Ok(focused) = window::Window::focused() else {
-        if debug {
-            eprintln!("[snap debug] daemon: record_current_focus: pid {pid}: no focused window");
-        }
-        return;
-    };
-    let Ok(rect) = focused.rect() else {
-        if debug {
-            eprintln!(
-                "[snap debug] daemon: record_current_focus: pid {pid}: focused.rect() failed"
+    let focused = match window::Window::focused() {
+        Ok(focused) => focused,
+        Err(error) => {
+            error_log::record(
+                "daemon",
+                &format!("record_current_focus: pid {pid}: no focused window: {error}"),
             );
+            if debug {
+                eprintln!(
+                    "[snap debug] daemon: record_current_focus: pid {pid}: no focused window"
+                );
+            }
+            return;
         }
-        return;
+    };
+    let rect = match focused.rect() {
+        Ok(rect) => rect,
+        Err(error) => {
+            error_log::record(
+                "daemon",
+                &format!("record_current_focus: pid {pid}: focused rect failed: {error}"),
+            );
+            if debug {
+                eprintln!(
+                    "[snap debug] daemon: record_current_focus: pid {pid}: focused.rect() failed"
+                );
+            }
+            return;
+        }
     };
     let Some(window_number) = window_number_for_with_retry(pid, rect) else {
+        error_log::record(
+            "daemon",
+            &format!("record_current_focus: pid {pid}: no CGWindowList match for rect {rect:?}"),
+        );
         if debug {
             eprintln!(
                 "[snap debug] daemon: record_current_focus: pid {pid}: no CGWindowList match for rect {rect:?}"

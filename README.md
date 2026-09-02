@@ -283,7 +283,9 @@ snap doctor
 Prints everything needed to debug a broken setup: Accessibility trust,
 binary path, the effective config (and whether `~/.config/snap.toml` was
 found), Stage Manager status, every attached display with its usable
-bounds and which one is "current," and the focused window. Read-only —
+bounds and which one is "current," the focused window, and the persistent
+error-log path (`~/Library/Logs/snap/errors.log`). CLI and focus-daemon
+failures are appended there with timestamps for later inspection. Read-only —
 never moves a window — and, unlike every other command, doesn't require
 Accessibility to run: it reports trust status as one line among several and
 exits 0 as long as it produced a report. Safe to paste into a GitHub issue.
