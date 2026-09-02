@@ -6,6 +6,7 @@ mod config;
 mod display;
 mod focus_watch;
 mod history;
+mod launchd;
 mod layout;
 mod spatial;
 mod tile;
