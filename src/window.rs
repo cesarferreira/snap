@@ -207,6 +207,19 @@ pub fn visible_windows_on(display_frame: Rect) -> Result<Vec<TileCandidate>> {
     )
     .ok_or_else(|| anyhow!("failed to enumerate windows"))?;
 
+    // Cached per pid (avoids re-querying the same app's AX window list once
+    // per on-screen window it owns) and paired with a used-index set: two
+    // on-screen windows of the same app can land within `rects_roughly_equal`
+    // of each other (e.g. `snap stack`'s cascade, where windows sit only a
+    // small step apart), and without excluding already-claimed AX windows
+    // here, both CGWindow entries would match the *same* AXUIElement —
+    // silently collapsing two distinct windows into one candidate that's
+    // moved twice instead of two windows moved once each.
+    let mut ax_windows_by_pid: std::collections::HashMap<pid_t, Vec<AXUIElement>> =
+        std::collections::HashMap::new();
+    let mut used_by_pid: std::collections::HashMap<pid_t, std::collections::HashSet<usize>> =
+        std::collections::HashMap::new();
+
     let mut candidates = Vec::new();
     for ptr in infos.get_all_values() {
         let dict: CFDictionary =
@@ -220,6 +233,7 @@ pub fn visible_windows_on(display_frame: Rect) -> Result<Vec<TileCandidate>> {
         let Some(pid) = dict_i64(&dict, unsafe { kCGWindowOwnerPID } as *const c_void) else {
             continue;
         };
+        let pid = pid as pid_t;
         let Some(cg_bounds) = dict_bounds(&dict) else {
             continue;
         };
@@ -227,17 +241,21 @@ pub fn visible_windows_on(display_frame: Rect) -> Result<Vec<TileCandidate>> {
             continue;
         }
 
-        let app = AXUIElement::application(pid as pid_t);
-        let Ok(windows) = app
-            .attribute::<CFArray<AXUIElement>>(&CFString::from_static_string(kAXWindowsAttribute))
-        else {
-            continue;
-        };
-        let Some(element) = windows.iter().find(|w| {
-            let window = Window {
-                element: (**w).clone(),
-            };
-            matches!(window.rect(), Ok(r) if rects_roughly_equal(r, cg_bounds))
+        let ax_windows = ax_windows_by_pid.entry(pid).or_insert_with(|| {
+            AXUIElement::application(pid)
+                .attribute::<CFArray<AXUIElement>>(&CFString::from_static_string(
+                    kAXWindowsAttribute,
+                ))
+                .map(|arr| arr.iter().map(|w| (*w).clone()).collect())
+                .unwrap_or_default()
+        });
+        let used = used_by_pid.entry(pid).or_default();
+        let Some(match_idx) = ax_windows.iter().enumerate().find_map(|(i, w)| {
+            if used.contains(&i) {
+                return None;
+            }
+            let window = Window { element: w.clone() };
+            matches!(window.rect(), Ok(r) if rects_roughly_equal(r, cg_bounds)).then_some(i)
         }) else {
             if debug {
                 eprintln!(
@@ -246,6 +264,8 @@ pub fn visible_windows_on(display_frame: Rect) -> Result<Vec<TileCandidate>> {
             }
             continue;
         };
+        used.insert(match_idx);
+        let element = ax_windows[match_idx].clone();
 
         if !is_tileable(&element) {
             continue;
@@ -257,11 +277,9 @@ pub fn visible_windows_on(display_frame: Rect) -> Result<Vec<TileCandidate>> {
         let window_number =
             dict_i64(&dict, unsafe { kCGWindowNumber } as *const c_void).unwrap_or(-1);
         candidates.push(TileCandidate {
-            window: Window {
-                element: (*element).clone(),
-            },
+            window: Window { element },
             rect: cg_bounds,
-            pid: pid as pid_t,
+            pid,
             app_name,
             title,
             window_number,
