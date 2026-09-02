@@ -598,9 +598,36 @@ fn run_daemon(action: DaemonCommand) -> anyhow::Result<()> {
             Ok(())
         }
         DaemonCommand::Run => {
+            // `accessibility::is_trusted()` can report `true` here even
+            // when it shouldn't: interactively-run snap commands inherit
+            // Terminal's own Accessibility trust as their "responsible
+            // process," but launchd has no such parent to inherit from, so
+            // this process is evaluated on its own — separately from every
+            // other snap invocation on the machine. It is genuinely
+            // untrusted the first time the daemon ever runs.
+            //
+            // Don't just prompt-and-exit: under launchd's `KeepAlive`, an
+            // immediate exit triggers an immediate relaunch, which would
+            // re-prompt (and re-register a fresh TCC entry) every time,
+            // racing the user's own attempt to grant trust in System
+            // Settings before it can ever stick. Prompt once, then poll
+            // quietly until trust is granted, so restart never happens
+            // mid-grant.
+            let debug = std::env::var_os("SNAP_DEBUG").is_some();
             if !accessibility::is_trusted() {
+                if debug {
+                    eprintln!("[snap debug] daemon: not trusted at startup, prompting and waiting");
+                }
                 accessibility::prompt_for_trust();
-                return Err(accessibility_unavailable());
+                while !accessibility::is_trusted() {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    if debug {
+                        eprintln!("[snap debug] daemon: still waiting for trust");
+                    }
+                }
+            }
+            if debug {
+                eprintln!("[snap debug] daemon: trusted, entering focus_watch::run()");
             }
             focus_watch::run().map_err(runtime_failure)
         }

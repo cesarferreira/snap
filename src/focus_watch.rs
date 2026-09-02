@@ -23,7 +23,8 @@ use anyhow::{Result, anyhow};
 use block2::RcBlock;
 use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
 use core_foundation::string::{CFString, CFStringRef};
-use objc2_app_kit::{NSWorkspace, NSWorkspaceDidActivateApplicationNotification};
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSApplication, NSWorkspace, NSWorkspaceDidActivateApplicationNotification};
 use objc2_foundation::NSNotification;
 
 use crate::ax::{AXObserver, AXUIElement};
@@ -32,6 +33,18 @@ use crate::window;
 
 /// Runs forever. Called only from `snap daemon run`, which launchd invokes.
 pub fn run() -> Result<()> {
+    // `NSWorkspace` notifications (app activation) are only delivered to
+    // processes connected to the window server as a proper application —
+    // a bare CFRunLoop with no `NSApplication` never receives them. Without
+    // this, the AXObserver path (attached below, and re-attached on every
+    // notification) silently never gets re-targeted to a newly frontmost
+    // app: it stays attached to whatever app was frontmost at daemon
+    // startup, so only in-app window switches within that one app keep
+    // getting recorded.
+    let mtm = MainThreadMarker::new()
+        .ok_or_else(|| anyhow!("focus_watch::run must be called from the main thread"))?;
+    NSApplication::sharedApplication(mtm);
+
     let observer_slot: Rc<RefCell<Option<AXObserver>>> = Rc::new(RefCell::new(None));
 
     attach_and_record(&observer_slot);
@@ -50,6 +63,9 @@ pub fn run() -> Result<()> {
         center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
     };
 
+    if std::env::var_os("SNAP_DEBUG").is_some() {
+        eprintln!("[snap debug] daemon: entering CFRunLoop::run_current()");
+    }
     CFRunLoop::run_current();
     unreachable!("CFRunLoop::run_current() blocks forever")
 }
@@ -59,14 +75,26 @@ pub fn run() -> Result<()> {
 /// new frontmost app so in-app window switches keep getting recorded until
 /// the next app switch.
 fn attach_and_record(observer_slot: &Rc<RefCell<Option<AXObserver>>>) {
+    let debug = std::env::var_os("SNAP_DEBUG").is_some();
+    if debug {
+        eprintln!("[snap debug] daemon: attach_and_record fired");
+    }
     *observer_slot.borrow_mut() = None;
     record_current_focus();
 
     let Some(pid) = window::frontmost_app_pid() else {
+        if debug {
+            eprintln!("[snap debug] daemon: no frontmost app pid");
+        }
         return;
     };
-    if let Ok(observer) = attach_focused_window_observer(pid) {
-        *observer_slot.borrow_mut() = Some(observer);
+    match attach_focused_window_observer(pid) {
+        Ok(observer) => *observer_slot.borrow_mut() = Some(observer),
+        Err(e) => {
+            if debug {
+                eprintln!("[snap debug] daemon: attach_focused_window_observer failed: {e}");
+            }
+        }
     }
 }
 
@@ -99,17 +127,39 @@ unsafe extern "C" fn on_focused_window_changed(
 /// Reads whichever window is frontmost right now and records it. Shared by
 /// both notification paths (app switch and in-app window switch).
 fn record_current_focus() {
+    let debug = std::env::var_os("SNAP_DEBUG").is_some();
     let Some(pid) = window::frontmost_app_pid() else {
+        if debug {
+            eprintln!("[snap debug] daemon: record_current_focus: no frontmost app pid");
+        }
         return;
     };
     let Ok(focused) = window::Window::focused() else {
+        if debug {
+            eprintln!("[snap debug] daemon: record_current_focus: pid {pid}: no focused window");
+        }
         return;
     };
     let Ok(rect) = focused.rect() else {
+        if debug {
+            eprintln!(
+                "[snap debug] daemon: record_current_focus: pid {pid}: focused.rect() failed"
+            );
+        }
         return;
     };
     let Some(window_number) = window::window_number_for(pid, rect) else {
+        if debug {
+            eprintln!(
+                "[snap debug] daemon: record_current_focus: pid {pid}: no CGWindowList match for rect {rect:?}"
+            );
+        }
         return;
     };
+    if debug {
+        eprintln!(
+            "[snap debug] daemon: record_current_focus: recording pid {pid} window {window_number}"
+        );
+    }
     history::record(pid, window_number);
 }
