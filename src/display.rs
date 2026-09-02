@@ -6,20 +6,16 @@
 //! top-left of the primary screen, y increasing downward. Every rect
 //! returned from here is already converted into that CG space so the rest
 //! of the app only ever deals with one coordinate system.
-//!
-//! Uses the `cocoa` crate (deprecated upstream in favor of `objc2-app-kit`)
-//! since `accessibility` already pulls it in transitively.
-#![allow(deprecated)]
 
 use anyhow::{Result, bail};
-use cocoa::appkit::NSScreen;
-use cocoa::base::{id, nil};
-use cocoa::foundation::NSArray;
 use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
 use core_foundation_sys::base::Boolean;
 use core_foundation_sys::preferences::CFPreferencesGetAppBooleanValue;
 use core_foundation_sys::string::CFStringRef;
+use objc2::MainThreadMarker;
+use objc2_app_kit::NSScreen;
+use objc2_foundation::NSRect;
 
 use crate::layout::Rect;
 
@@ -47,26 +43,27 @@ pub fn all_displays(stage_manager_width: f64) -> Result<Vec<Display>> {
         0.0
     };
 
-    unsafe {
-        let screens = NSScreen::screens(nil);
-        let count = screens.count();
-        if count == 0 {
-            bail!("no displays found");
-        }
+    let Some(mtm) = MainThreadMarker::new() else {
+        bail!("displays can only be enumerated from the main thread");
+    };
+    let screens = NSScreen::screens(mtm).to_vec();
+    let Some(primary) = screens.first() else {
+        bail!("no displays found");
+    };
+    let primary_height = primary.frame().size.height;
 
-        let primary_height = NSScreen::frame(screens.objectAtIndex(0)).size.height;
-
-        let mut displays = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let screen: id = screens.objectAtIndex(i);
-            let frame = cocoa_to_cg(NSScreen::frame(screen), primary_height);
-            let mut usable = cocoa_to_cg(NSScreen::visibleFrame(screen), primary_height);
+    Ok(screens
+        .iter()
+        .map(|screen| {
+            let mut usable = cocoa_to_cg(screen.visibleFrame(), primary_height);
             usable.x += reserve;
             usable.width -= reserve;
-            displays.push(Display { frame, usable });
-        }
-        Ok(displays)
-    }
+            Display {
+                frame: cocoa_to_cg(screen.frame(), primary_height),
+                usable,
+            }
+        })
+        .collect())
 }
 
 /// Reads `GloballyEnabled` from the `com.apple.WindowManager` preference
@@ -86,7 +83,7 @@ pub fn stage_manager_enabled() -> bool {
     }
 }
 
-fn cocoa_to_cg(r: cocoa::foundation::NSRect, primary_height: f64) -> Rect {
+fn cocoa_to_cg(r: NSRect, primary_height: f64) -> Rect {
     Rect::new(
         r.origin.x,
         primary_height - (r.origin.y + r.size.height),

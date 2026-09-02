@@ -1,5 +1,6 @@
 mod accessibility;
 mod accordion;
+mod ax;
 mod cli;
 mod config;
 mod display;

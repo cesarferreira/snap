@@ -1,17 +1,16 @@
 //! Window discovery and manipulation via the Accessibility APIs (PRD §7,
 //! §13, §23).
-#![allow(deprecated)] // `cocoa` is deprecated upstream in favor of objc2-app-kit.
-#![allow(unexpected_cfgs)] // `objc`'s msg_send!/class! macros check a `cargo-clippy` cfg we don't set.
 
 use std::ffi::c_void;
 
-use accessibility::{AXAttribute, AXUIElement, AXUIElementActions, AXUIElementAttributes};
 use accessibility_sys::{
-    AXValueCreate, AXValueGetValue, AXValueRef, AXValueType, kAXValueTypeCGPoint,
-    kAXValueTypeCGSize, pid_t,
+    AXValueCreate, AXValueGetValue, AXValueRef, AXValueType, kAXFocusedWindowAttribute,
+    kAXMainWindowAttribute, kAXMinimizedAttribute, kAXPositionAttribute, kAXRaiseAction,
+    kAXSizeAttribute, kAXStandardWindowSubrole, kAXSubroleAttribute, kAXValueTypeCGPoint,
+    kAXValueTypeCGSize, kAXWindowsAttribute, pid_t,
 };
 use anyhow::{Result, anyhow};
-use cocoa::base::id;
+use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
@@ -23,20 +22,21 @@ use core_graphics::window::{
     kCGWindowListOptionOnScreenOnly, kCGWindowName, kCGWindowNumber, kCGWindowOwnerName,
     kCGWindowOwnerPID,
 };
-use objc::{class, msg_send, sel, sel_impl};
+use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
 
+use crate::ax::AXUIElement;
 use crate::layout::Rect;
 
 pub struct Window {
     element: AXUIElement,
 }
 
-fn position_attr() -> AXAttribute<CFType> {
-    AXAttribute::new(&CFString::from_static_string("AXPosition"))
+fn position_attr() -> CFString {
+    CFString::from_static_string(kAXPositionAttribute)
 }
 
-fn size_attr() -> AXAttribute<CFType> {
-    AXAttribute::new(&CFString::from_static_string("AXSize"))
+fn size_attr() -> CFString {
+    CFString::from_static_string(kAXSizeAttribute)
 }
 
 impl Window {
@@ -60,15 +60,17 @@ impl Window {
 
         let app = AXUIElement::application(pid);
         let window = app
-            .focused_window()
+            .attribute::<AXUIElement>(&CFString::from_static_string(kAXFocusedWindowAttribute))
             .or_else(|e1| {
-                app.main_window().map_err(|e2| {
+                app.attribute::<AXUIElement>(&CFString::from_static_string(
+                    kAXMainWindowAttribute,
+                ))
+                .inspect_err(|e2| {
                     if debug {
                         eprintln!(
                             "[snap debug] pid {pid}: focused_window failed: {e1:?}; main_window failed: {e2:?}"
                         );
                     }
-                    e2
                 })
             })
             .map_err(|_| anyhow!("no focused window"))?;
@@ -129,18 +131,18 @@ impl Window {
     /// the window actually becomes key (PRD: spatial focus, accordion).
     pub fn raise(&self) -> Result<()> {
         self.element
-            .raise()
+            .perform_action(&CFString::from_static_string(kAXRaiseAction))
             .map_err(|_| anyhow!("cannot raise window"))
     }
 
     fn get_ax_value<T: Copy + Default>(
         &self,
-        attr: &AXAttribute<CFType>,
+        attr: &CFString,
         value_type: AXValueType,
     ) -> Result<T> {
         let value = self
             .element
-            .attribute(attr)
+            .attribute_value(attr)
             .map_err(|_| anyhow!("window cannot be resized"))?;
         let value_ref = value.as_concrete_TypeRef() as *mut c_void as AXValueRef;
         let mut out = T::default();
@@ -153,12 +155,7 @@ impl Window {
         }
     }
 
-    fn set_ax_value<T>(
-        &self,
-        attr: &AXAttribute<CFType>,
-        value_type: AXValueType,
-        value: &T,
-    ) -> Result<()> {
+    fn set_ax_value<T>(&self, attr: &CFString, value_type: AXValueType, value: &T) -> Result<()> {
         let ax_value = unsafe { AXValueCreate(value_type, value as *const T as *const c_void) };
         if ax_value.is_null() {
             return Err(anyhow!("window cannot be resized"));
@@ -166,7 +163,7 @@ impl Window {
         let wrapped =
             unsafe { CFType::wrap_under_create_rule(ax_value as core_foundation::base::CFTypeRef) };
         self.element
-            .set_attribute(attr, wrapped)
+            .set_attribute(attr, &wrapped)
             .map_err(|_| anyhow!("window cannot be resized"))
     }
 }
@@ -231,7 +228,11 @@ pub fn visible_windows_on(display_frame: Rect) -> Result<Vec<TileCandidate>> {
         }
 
         let app = AXUIElement::application(pid as pid_t);
-        let Ok(windows) = app.windows() else { continue };
+        let Ok(windows) = app
+            .attribute::<CFArray<AXUIElement>>(&CFString::from_static_string(kAXWindowsAttribute))
+        else {
+            continue;
+        };
         let Some(element) = windows.iter().find(|w| {
             let window = Window {
                 element: (**w).clone(),
@@ -316,11 +317,13 @@ fn dict_f64_by_str(dict: &CFDictionary, key: &str) -> Option<f64> {
 }
 
 fn is_tileable(element: &AXUIElement) -> bool {
-    if matches!(element.minimized(), Ok(m) if m == CFBoolean::true_value()) {
+    let minimized =
+        element.attribute::<CFBoolean>(&CFString::from_static_string(kAXMinimizedAttribute));
+    if matches!(minimized, Ok(m) if m == CFBoolean::true_value()) {
         return false;
     }
-    match element.subrole() {
-        Ok(subrole) => subrole == "AXStandardWindow",
+    match element.attribute::<CFString>(&CFString::from_static_string(kAXSubroleAttribute)) {
+        Ok(subrole) => subrole == kAXStandardWindowSubrole,
         Err(_) => false,
     }
 }
@@ -336,15 +339,11 @@ fn points_equal(a: f64, b: f64) -> bool {
 }
 
 pub fn frontmost_app_pid() -> Option<pid_t> {
-    unsafe {
-        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
-        let app: id = msg_send![workspace, frontmostApplication];
-        if app.is_null() {
-            return None;
-        }
-        let pid: pid_t = msg_send![app, processIdentifier];
-        Some(pid)
-    }
+    Some(
+        NSWorkspace::sharedWorkspace()
+            .frontmostApplication()?
+            .processIdentifier(),
+    )
 }
 
 /// Brings the application owning `pid` frontmost, without moving the mouse
@@ -352,13 +351,11 @@ pub fn frontmost_app_pid() -> Option<pid_t> {
 /// (not just "some window of this app") becomes key — two Safari windows
 /// are otherwise indistinguishable to `NSRunningApplication::activate`.
 pub fn activate_app(pid: pid_t) {
-    const NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS: u64 = 1 << 1;
-    unsafe {
-        let app: id =
-            msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier: pid];
-        if !app.is_null() {
-            let _: bool =
-                msg_send![app, activateWithOptions: NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS];
-        }
+    // `ActivateIgnoringOtherApps` is a no-op from macOS 14 on, but it's what
+    // makes activation stick on 12/13 when another app holds activation.
+    #[allow(deprecated)]
+    let options = NSApplicationActivationOptions::ActivateIgnoringOtherApps;
+    if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+        app.activateWithOptions(options);
     }
 }
