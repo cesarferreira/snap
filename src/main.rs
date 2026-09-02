@@ -564,6 +564,22 @@ fn run_undo(stage_manager_width: f64) -> anyhow::Result<()> {
 /// `snap last` — toggles focus to whichever window was focused immediately
 /// before the current one, per the focus-watch daemon's history.
 fn run_last() -> anyhow::Result<()> {
+    // Check the daemon itself before trusting anything in the history file:
+    // a `previous` entry left over from a daemon that's no longer running
+    // is stale by definition, and "previous window is no longer available"
+    // would otherwise be a misleading way to say "there's no daemon
+    // keeping this up to date" — the fix here is 'snap daemon install',
+    // not "try switching windows again."
+    let (installed, loaded) = launchd::status();
+    if !loaded {
+        let message = if installed {
+            "error: focus-history daemon is installed but not running — run 'snap daemon install' again"
+        } else {
+            "error: focus-history daemon isn't installed — run 'snap daemon install'"
+        };
+        return Err(ExitError(message.into(), EXIT_RUNTIME_FAILURE).into());
+    }
+
     match history::toggle(|target| {
         let window = window::find_window(target.pid, target.window_number).ok()?;
         window.raise().ok()?;
@@ -572,7 +588,7 @@ fn run_last() -> anyhow::Result<()> {
     }) {
         Ok(()) => Ok(()),
         Err(history::LastError::NoHistory) => Err(ExitError(
-            "error: no focus history yet — run 'snap daemon install'".into(),
+            "error: no focus history yet — switch to a couple of windows, then try again".into(),
             EXIT_RUNTIME_FAILURE,
         )
         .into()),
