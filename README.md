@@ -1,12 +1,6 @@
 <div align="center">
   <h1>snap 🫰</h1>
-
   <p><strong>Fast, stateless window management for macOS.</strong></p>
-
-  
-    Snap, resize, cycle, and tile windows from your terminal.
-    One-shot by default. No GUI, config, or daemon required.
-  
 </div>
 
 <div align="center">
@@ -18,7 +12,7 @@
   </p>
 
   <p>
-    <img alt="snap tiling terminal windows on macOS" src="screenshot.png" width="800">
+    <img alt="snap tiling terminal windows on macOS" src="screenshot.png" width="80%">
   </p>
 
   <p>
