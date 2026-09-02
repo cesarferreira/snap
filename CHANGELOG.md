@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-09-02
+
+### 🚀 Features
+
+- Add on-disk focus-history cache for snap last
+- Resolve (pid, window_number) back to a live AXUIElement
+- Add AXObserver wrapper for focused-window-changed notifications
+- Add focus-watch daemon (NSWorkspace + AXObserver)
+- Add launchd install/uninstall/status for the focus-watch daemon
+- Add 'snap last' and 'snap daemon install/uninstall/run' to the CLI
+- Wire up 'snap last' and 'snap daemon' commands
+
+### 🐛 Bug Fixes
+
+- Initialize NSApplication so NSWorkspace app-switch notifications fire
+- Snap last reports when the daemon isn't running, not a stale error
+- Fix
+
+### 💼 Other
+
+- Add block2 and NSNotification/NSOperation features for focus-watch daemon
+- Progress
+- Error logging
+- Daemon
+- Updated readme
+- Updated readme
+
+### 📚 Documentation
+
+- Add design spec for snap last focus-history daemon
+- Add implementation plan for snap last
+- Document snap last and the opt-in focus-history daemon
+
+### 🎨 Styling
+
+- Cargo fmt focus_watch.rs
+
+### ⚙️ Miscellaneous Tasks
+
+- Ignore .worktrees/ directory
+- Remove planning docs for snap last
 ## [0.3.0] - 2026-09-02
 
 ### 🚀 Features
