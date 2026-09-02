@@ -148,7 +148,7 @@ fn record_current_focus() {
         }
         return;
     };
-    let Some(window_number) = window::window_number_for(pid, rect) else {
+    let Some(window_number) = window_number_for_with_retry(pid, rect) else {
         if debug {
             eprintln!(
                 "[snap debug] daemon: record_current_focus: pid {pid}: no CGWindowList match for rect {rect:?}"
@@ -162,4 +162,30 @@ fn record_current_focus() {
         );
     }
     history::record(pid, window_number);
+}
+
+/// `CGWindowList`'s on-screen snapshot can briefly lag behind AX's
+/// already-updated focused-window rect right at the moment an app becomes
+/// frontmost — the very first lookup right after a notification can miss
+/// even though the window is genuinely on-screen, with a lookup moments
+/// later succeeding. Bounded to ~600ms: long enough to absorb that lag for
+/// most apps without meaningfully delaying a background recording nothing
+/// else is waiting on, but short enough not to badly stall the daemon's
+/// single run loop thread if the user switches again immediately — a
+/// lookup that's still failing when the budget runs out is usually
+/// corrected moments later anyway by the newly-attached AXObserver's own
+/// notification for whatever's now actually focused.
+const WINDOW_LOOKUP_RETRIES: u32 = 10;
+const WINDOW_LOOKUP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(60);
+
+fn window_number_for_with_retry(pid: pid_t, rect: crate::layout::Rect) -> Option<i64> {
+    for attempt in 0..WINDOW_LOOKUP_RETRIES {
+        if let Some(number) = window::window_number_for(pid, rect) {
+            return Some(number);
+        }
+        if attempt + 1 < WINDOW_LOOKUP_RETRIES {
+            std::thread::sleep(WINDOW_LOOKUP_RETRY_DELAY);
+        }
+    }
+    None
 }

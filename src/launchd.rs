@@ -49,6 +49,8 @@ fn plist_contents(exe: &std::path::Path, log: &std::path::Path) -> String {
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>ProcessType</key>
+    <string>Interactive</string>
     <key>StandardOutPath</key>
     <string>{log}</string>
     <key>StandardErrorPath</key>

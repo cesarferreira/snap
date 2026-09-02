@@ -356,18 +356,24 @@ fn points_equal(a: f64, b: f64) -> bool {
     (a - b).abs() < 1.0
 }
 
-/// All `CGWindowList`-known windows owned by `pid`, as `(window_number,
-/// bounds)` pairs. Backs both [`window_number_for`] (the focus-watch
-/// daemon's write path) and [`find_window`] (`snap last`'s read path).
+/// All on-screen `CGWindowList`-known windows owned by `pid`, as
+/// `(window_number, bounds)` pairs. Backs both [`window_number_for`] (the
+/// focus-watch daemon's write path) and [`find_window`] (`snap last`'s
+/// read path).
 ///
-/// Unlike [`visible_windows_on`], this isn't scoped to on-screen windows on
-/// one display — `snap last`'s target may be minimized or on another
-/// display/Space. `CGWindowListCopyWindowInfo` without
-/// `kCGWindowListOptionOnScreenOnly` still won't surface windows on Spaces
-/// that have never been visited this session; that's a known, accepted
-/// limitation (best-effort, matching this file's existing tone).
+/// Deliberately scoped to on-screen windows, like [`visible_windows_on`]:
+/// empirically, `CGWindowListCopyWindowInfo` called with
+/// `kCGWindowListExcludeDesktopElements` alone (no
+/// `kCGWindowListOptionOnScreenOnly`) returns zero windows on current
+/// macOS — there's no "every window, including minimized/other-Space
+/// ones" query that actually works, so `snap last` can only resolve a
+/// target that's currently on-screen. Best-effort, matching this file's
+/// existing tone.
 fn cg_windows_for_pid(pid: pid_t) -> Vec<(i64, Rect)> {
-    let Some(infos) = copy_window_info(kCGWindowListExcludeDesktopElements, 0) else {
+    let Some(infos) = copy_window_info(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        0,
+    ) else {
         return Vec::new();
     };
     infos
@@ -399,7 +405,8 @@ pub fn window_number_for(pid: pid_t, rect: Rect) -> Option<i64> {
 
 /// Resolves a `(pid, window_number)` pair — as recorded by the focus-watch
 /// daemon — back to a live [`Window`], for `snap last` to raise/activate.
-/// Errors if the window has since closed or the owning app has quit.
+/// Errors if the window has since closed, the owning app has quit, or the
+/// window is currently minimized/off-screen (see [`cg_windows_for_pid`]).
 pub fn find_window(pid: pid_t, window_number: i64) -> Result<Window> {
     let rect = cg_windows_for_pid(pid)
         .into_iter()
