@@ -1,25 +1,24 @@
 <div align="center">
   <h1>snap 🫰</h1>
 
-  <p><strong>Window management from the terminal.</strong></p>
+  <p><strong>Fast, stateless window management for macOS.</strong></p>
+
+  <p>
+    Snap, resize, cycle, and tile windows from your terminal.<br>
+    One-shot by default. No GUI, config, or daemon required.
+  </p>
 </div>
 
-```bash
-snap left      # cycle left 50% / left 75% / left 25%
-snap           # cycle 50% / 75% / 25%, centered
-snap full      # fill the current display
-snap tile      # tile visible windows
-```
-
 <div align="center">
-
-  <p><strong>No daemon by default. No GUI. No config required.</strong></p>
-
   <p>
     <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
     <img alt="Rust" src="https://img.shields.io/badge/rust-1.85%2B-orange">
     <img alt="Edition" src="https://img.shields.io/badge/edition-2024-blue">
     <a href="https://crates.io/crates/snap-macos"><img alt="crates.io" src="https://img.shields.io/crates/v/snap-macos.svg"></a>
+  </p>
+
+  <p>
+    <img alt="snap configuration example" src="screenshot.png" width="800">
   </p>
 
   <p>
