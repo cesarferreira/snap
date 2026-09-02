@@ -7,23 +7,22 @@
 # don't need a Rust toolchain. The installed binary is named `snap`, not
 # `snap-macos` (the crates.io name, which was taken).
 #
-# Release checklist: after `make release` finishes and CI has published the
-# new tag's artifacts, run `make formula-sha256` and paste the two checksums
-# below, then bump `version`.
+# release.yml pushes the version/checksum update to homebrew-tap automatically
+# on every tag; this copy is kept in sync manually as a reference.
 class Snap < Formula
   desc "Fast, minimal macOS window manipulation from the terminal"
   homepage "https://github.com/cesarferreira/snap"
-  version "0.1.0"
+  version "0.2.0"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/cesarferreira/snap/releases/download/v#{version}/snap-aarch64-apple-darwin.tar.gz"
-      sha256 "REPLACE_WITH_AARCH64_SHA256" # updated by `make formula-sha256` each release
+      sha256 "c528945ee29cde6fe7509824131c9397b0cd2b26e19956b46df9ea3216d8dd93"
     end
     on_intel do
       url "https://github.com/cesarferreira/snap/releases/download/v#{version}/snap-x86_64-apple-darwin.tar.gz"
-      sha256 "REPLACE_WITH_X86_64_SHA256" # updated by `make formula-sha256` each release
+      sha256 "ea0ec86ccdeb5e6288e1a7ab973090c5242c26add886c8541725e525e42ed1f1"
     end
   end
 
