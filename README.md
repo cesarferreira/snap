@@ -3,10 +3,10 @@
 
   <p><strong>Fast, stateless window management for macOS.</strong></p>
 
-  <p>
-    Snap, resize, cycle, and tile windows from your terminal.<br>
+  
+    Snap, resize, cycle, and tile windows from your terminal.
     One-shot by default. No GUI, config, or daemon required.
-  </p>
+  
 </div>
 
 <div align="center">
