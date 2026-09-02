@@ -111,6 +111,16 @@ pub enum Command {
     /// Restore the focused window to its previous frame (toggles: a second
     /// `undo` returns to where the first one started).
     Undo,
+    /// Focus the window that was focused immediately before the current
+    /// one (toggle: a second `last` returns to where you started).
+    /// Requires the focus-history daemon: `snap daemon install`.
+    Last,
+    /// Manage the optional background daemon that tracks focus history for
+    /// `snap last`. snap has no daemon by default; this opts in.
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonCommand,
+    },
     /// Print Accessibility trust, config, displays, and the focused window,
     /// for debugging a broken setup. Read-only; the one other command
     /// (besides `list`) that prints on success.
@@ -134,6 +144,18 @@ pub enum ListScope {
 pub enum StackAction {
     Next,
     Previous,
+}
+
+#[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonCommand {
+    /// Install and start the focus-history launch agent (runs at login).
+    Install,
+    /// Stop and remove the focus-history launch agent.
+    Uninstall,
+    /// Internal: the long-running focus-watch process launchd invokes.
+    /// Not meant to be run directly.
+    #[command(hide = true)]
+    Run,
 }
 
 fn parse_stack_action(s: &str) -> Result<StackAction, String> {

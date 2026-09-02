@@ -4,6 +4,10 @@ mod ax;
 mod cli;
 mod config;
 mod display;
+mod error_log;
+mod focus_watch;
+mod history;
+mod launchd;
 mod layout;
 mod spatial;
 mod tile;
@@ -14,7 +18,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use cli::{Cli, Command, ListScope, StackAction};
+use cli::{Cli, Command, DaemonCommand, ListScope, StackAction};
 use layout::{
     DisplayTarget, MAX_PERCENT, MIN_PERCENT, Rect, almost_rect, center_rect,
     detect_centered_percent, detect_directional_percent, detect_third, directional_rect, full_rect,
@@ -36,11 +40,14 @@ fn main() -> ExitCode {
         Err(err) => {
             if let Some(exit_err) = err.downcast_ref::<ExitError>() {
                 if !exit_err.0.to_string().is_empty() {
+                    error_log::record("cli", &exit_err.0);
                     eprintln!("{}", exit_err.0);
                 }
                 return ExitCode::from(exit_err.1);
             }
-            eprintln!("error: {err}");
+            let message = format!("error: {err}");
+            error_log::record("cli", &message);
+            eprintln!("{message}");
             ExitCode::from(EXIT_RUNTIME_FAILURE)
         }
     }
@@ -85,6 +92,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         return run_doctor(&config, config.stage_manager_width);
     }
 
+    // `daemon install`/`uninstall` never touch AX; `daemon run` checks
+    // Accessibility itself (see `run_daemon`) since it's the one variant
+    // that actually calls into AX.
+    if let Action::Daemon(daemon_action) = action {
+        return run_daemon(daemon_action);
+    }
+
     let app = cli.app.as_deref();
 
     if !accessibility::is_trusted() {
@@ -114,6 +128,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             config.accordion_padding,
         ),
         Action::Undo => run_undo(config.stage_manager_width),
+        Action::Last => run_last(),
+        Action::Daemon(_) => unreachable!("handled above before the accessibility gate"),
         Action::Doctor => unreachable!("handled above before the accessibility gate"),
     }
 }
@@ -134,6 +150,8 @@ enum Action {
     Swap(Direction),
     Stack(Option<StackAction>),
     Undo,
+    Last,
+    Daemon(DaemonCommand),
     Doctor,
 }
 
@@ -193,6 +211,8 @@ fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> 
             Command::Swap { direction } => Ok(Action::Swap(*direction)),
             Command::Stack { action } => Ok(Action::Stack(*action)),
             Command::Undo => Ok(Action::Undo),
+            Command::Last => Ok(Action::Last),
+            Command::Daemon { action } => Ok(Action::Daemon(*action)),
             Command::Doctor => Ok(Action::Doctor),
             Command::Third { position } => match position {
                 Some(third) => {
@@ -440,6 +460,21 @@ fn run_doctor(config: &config::Config, stage_manager_width: f64) -> anyhow::Resu
     println!("  stage_manager_width = {}", config.stage_manager_width);
     println!("  almost_padding = {}", config.almost_padding);
     println!("  accordion_padding = {}", config.accordion_padding);
+    match error_log::path() {
+        Some(path) => println!("Error log: {}", path.display()),
+        None => println!("Error log: unavailable ($HOME not set)"),
+    }
+
+    println!();
+    match launchd::status() {
+        (true, true) => println!("Focus-history daemon: installed and running"),
+        (true, false) => println!(
+            "Focus-history daemon: installed but not running (try 'snap daemon install' again)"
+        ),
+        (false, _) => println!(
+            "Focus-history daemon: not installed (run 'snap daemon install' to enable 'snap last')"
+        ),
+    }
     println!();
 
     let stage_manager_on = display::stage_manager_enabled();
@@ -532,6 +567,94 @@ fn run_undo(stage_manager_width: f64) -> anyhow::Result<()> {
     let previous = undo::take_and_swap(window_number, current_rect)
         .ok_or_else(|| ExitError("error: nothing to undo".into(), EXIT_RUNTIME_FAILURE))?;
     focused.set_rect(previous).map_err(runtime_failure)
+}
+
+/// `snap last` — toggles focus to whichever window was focused immediately
+/// before the current one, per the focus-watch daemon's history.
+fn run_last() -> anyhow::Result<()> {
+    // Check the daemon itself before trusting anything in the history file:
+    // a `previous` entry left over from a daemon that's no longer running
+    // is stale by definition, and "previous window is no longer available"
+    // would otherwise be a misleading way to say "there's no daemon
+    // keeping this up to date" — the fix here is 'snap daemon install',
+    // not "try switching windows again."
+    let (installed, loaded) = launchd::status();
+    if !loaded {
+        let message = if installed {
+            "error: focus-history daemon is installed but not running — run 'snap daemon install' again"
+        } else {
+            "error: focus-history daemon isn't installed — run 'snap daemon install'"
+        };
+        return Err(ExitError(message.into(), EXIT_RUNTIME_FAILURE).into());
+    }
+
+    match history::toggle(|target| {
+        window::focus_window(target.pid, target.window_number).ok()?;
+        Some(())
+    }) {
+        Ok(()) => Ok(()),
+        Err(history::LastError::NoHistory) => Err(ExitError(
+            "error: no focus history yet — switch to a couple of windows, then try again".into(),
+            EXIT_RUNTIME_FAILURE,
+        )
+        .into()),
+        Err(history::LastError::Unavailable) => Err(ExitError(
+            "error: previous window is no longer available".into(),
+            EXIT_RUNTIME_FAILURE,
+        )
+        .into()),
+    }
+}
+
+/// `snap daemon install|uninstall|run`.
+fn run_daemon(action: DaemonCommand) -> anyhow::Result<()> {
+    match action {
+        DaemonCommand::Install => {
+            launchd::install().map_err(runtime_failure)?;
+            println!("snap focus-history daemon installed and running.");
+            Ok(())
+        }
+        DaemonCommand::Uninstall => {
+            launchd::uninstall().map_err(runtime_failure)?;
+            println!("snap focus-history daemon stopped and removed.");
+            Ok(())
+        }
+        DaemonCommand::Run => {
+            let _daemon_lock = launchd::acquire_daemon_lock().map_err(runtime_failure)?;
+            // `accessibility::is_trusted()` can report `true` here even
+            // when it shouldn't: interactively-run snap commands inherit
+            // Terminal's own Accessibility trust as their "responsible
+            // process," but launchd has no such parent to inherit from, so
+            // this process is evaluated on its own — separately from every
+            // other snap invocation on the machine. It is genuinely
+            // untrusted the first time the daemon ever runs.
+            //
+            // Don't just prompt-and-exit: under launchd's `KeepAlive`, an
+            // immediate exit triggers an immediate relaunch, which would
+            // re-prompt (and re-register a fresh TCC entry) every time,
+            // racing the user's own attempt to grant trust in System
+            // Settings before it can ever stick. Prompt once, then poll
+            // quietly until trust is granted, so restart never happens
+            // mid-grant.
+            let debug = std::env::var_os("SNAP_DEBUG").is_some();
+            if !accessibility::is_trusted() {
+                if debug {
+                    eprintln!("[snap debug] daemon: not trusted at startup, prompting and waiting");
+                }
+                accessibility::prompt_for_trust();
+                while !accessibility::is_trusted() {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    if debug {
+                        eprintln!("[snap debug] daemon: still waiting for trust");
+                    }
+                }
+            }
+            if debug {
+                eprintln!("[snap debug] daemon: trusted, entering focus_watch::run()");
+            }
+            focus_watch::run().map_err(runtime_failure)
+        }
+    }
 }
 
 fn run_tile(gap: f64, stage_manager_width: f64, layout: TileLayout) -> anyhow::Result<()> {
