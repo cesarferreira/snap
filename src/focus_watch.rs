@@ -16,7 +16,9 @@ use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use accessibility_sys::{AXObserverRef, AXUIElementRef, kAXFocusedWindowChangedNotification, pid_t};
+use accessibility_sys::{
+    AXObserverRef, AXUIElementRef, kAXFocusedWindowChangedNotification, pid_t,
+};
 use anyhow::{Result, anyhow};
 use block2::RcBlock;
 use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
@@ -44,8 +46,9 @@ pub fn run() -> Result<()> {
     // SAFETY: `name` is a valid NSNotificationName; `block` outlives every
     // future notification because `run` never returns while the daemon is
     // alive (`CFRunLoop::run_current` blocks forever below).
-    let _token =
-        unsafe { center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block) };
+    let _token = unsafe {
+        center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
+    };
 
     CFRunLoop::run_current();
     unreachable!("CFRunLoop::run_current() blocks forever")
