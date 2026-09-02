@@ -18,6 +18,10 @@
   </p>
 
   <p>
+    <img alt="snap tiling terminal windows on macOS" src="screenshot.png" width="800">
+  </p>
+
+  <p>
     <a href="#install">Install</a>
     &nbsp;·&nbsp;
     <a href="#usage">Usage</a>
