@@ -6,14 +6,17 @@
 //! `static _NSConcreteStackBlock: Class` is a future hard error — is a
 //! bundle-identifier lookup snap never calls.
 
-use std::ffi::c_uchar;
+use std::ffi::{c_uchar, c_void};
 
 use accessibility_sys::{
-    AXError, AXUIElementCopyAttributeValue, AXUIElementCreateApplication, AXUIElementGetTypeID,
-    AXUIElementIsAttributeSettable, AXUIElementPerformAction, AXUIElementRef,
-    AXUIElementSetAttributeValue, kAXErrorIllegalArgument, kAXErrorNoValue, kAXErrorSuccess, pid_t,
+    AXError, AXObserverAddNotification, AXObserverCallback, AXObserverCreate,
+    AXObserverGetRunLoopSource, AXObserverGetTypeID, AXObserverRef, AXUIElementCopyAttributeValue,
+    AXUIElementCreateApplication, AXUIElementGetTypeID, AXUIElementIsAttributeSettable,
+    AXUIElementPerformAction, AXUIElementRef, AXUIElementSetAttributeValue,
+    kAXErrorIllegalArgument, kAXErrorNoValue, kAXErrorSuccess, pid_t,
 };
 use core_foundation::base::{CFType, TCFType, TCFTypeRef};
+use core_foundation::runloop::CFRunLoopSource;
 use core_foundation::string::CFString;
 use core_foundation::{declare_TCFType, impl_TCFType};
 use core_foundation_sys::base::CFTypeRef;
@@ -77,5 +80,43 @@ fn ax_result(error: AXError) -> Result<(), AXError> {
         Ok(())
     } else {
         Err(error)
+    }
+}
+
+declare_TCFType!(AXObserver, AXObserverRef);
+impl_TCFType!(AXObserver, AXObserverRef, AXObserverGetTypeID);
+
+impl AXObserver {
+    /// Creates an observer that invokes `callback` for notifications added
+    /// via [`Self::add_notification`]. `pid` is the application whose AX
+    /// notifications this observer receives.
+    pub fn new(pid: pid_t, callback: AXObserverCallback) -> Result<Self, AXError> {
+        let mut observer: AXObserverRef = std::ptr::null_mut();
+        ax_result(unsafe { AXObserverCreate(pid, callback, &mut observer) })?;
+        Ok(unsafe { Self::wrap_under_create_rule(observer) })
+    }
+
+    /// Starts delivering `notification` for `element` to this observer's
+    /// callback. `refcon` is passed through to the callback unchanged.
+    pub fn add_notification(
+        &self,
+        element: &AXUIElement,
+        notification: &CFString,
+        refcon: *mut c_void,
+    ) -> Result<(), AXError> {
+        ax_result(unsafe {
+            AXObserverAddNotification(
+                self.0,
+                element.as_concrete_TypeRef(),
+                notification.as_concrete_TypeRef(),
+                refcon,
+            )
+        })
+    }
+
+    /// The run-loop source that must be added to a run loop (typically the
+    /// current thread's) for this observer's callback to actually fire.
+    pub fn run_loop_source(&self) -> CFRunLoopSource {
+        unsafe { CFRunLoopSource::wrap_under_get_rule(AXObserverGetRunLoopSource(self.0)) }
     }
 }
