@@ -356,6 +356,74 @@ fn points_equal(a: f64, b: f64) -> bool {
     (a - b).abs() < 1.0
 }
 
+/// All `CGWindowList`-known windows owned by `pid`, as `(window_number,
+/// bounds)` pairs. Backs both [`window_number_for`] (the focus-watch
+/// daemon's write path) and [`find_window`] (`snap last`'s read path).
+///
+/// Unlike [`visible_windows_on`], this isn't scoped to on-screen windows on
+/// one display — `snap last`'s target may be minimized or on another
+/// display/Space. `CGWindowListCopyWindowInfo` without
+/// `kCGWindowListOptionOnScreenOnly` still won't surface windows on Spaces
+/// that have never been visited this session; that's a known, accepted
+/// limitation (best-effort, matching this file's existing tone).
+fn cg_windows_for_pid(pid: pid_t) -> Vec<(i64, Rect)> {
+    let Some(infos) = copy_window_info(kCGWindowListExcludeDesktopElements, 0) else {
+        return Vec::new();
+    };
+    infos
+        .get_all_values()
+        .into_iter()
+        .filter_map(|ptr| {
+            let dict: CFDictionary =
+                unsafe { CFDictionary::wrap_under_get_rule(ptr as CFDictionaryRef) };
+            let owner_pid = dict_i64(&dict, unsafe { kCGWindowOwnerPID } as *const c_void)?;
+            if owner_pid as pid_t != pid {
+                return None;
+            }
+            let number = dict_i64(&dict, unsafe { kCGWindowNumber } as *const c_void)?;
+            let bounds = dict_bounds(&dict)?;
+            Some((number, bounds))
+        })
+        .collect()
+}
+
+/// The `kCGWindowNumber` of `pid`'s window whose bounds match `rect`, if
+/// any. Used by the focus-watch daemon to turn "pid P's focused window is
+/// at rect R" into the stable identity `snap last` stores.
+pub fn window_number_for(pid: pid_t, rect: Rect) -> Option<i64> {
+    cg_windows_for_pid(pid)
+        .into_iter()
+        .find(|(_, r)| rects_roughly_equal(*r, rect))
+        .map(|(number, _)| number)
+}
+
+/// Resolves a `(pid, window_number)` pair — as recorded by the focus-watch
+/// daemon — back to a live [`Window`], for `snap last` to raise/activate.
+/// Errors if the window has since closed or the owning app has quit.
+pub fn find_window(pid: pid_t, window_number: i64) -> Result<Window> {
+    let rect = cg_windows_for_pid(pid)
+        .into_iter()
+        .find(|(number, _)| *number == window_number)
+        .map(|(_, rect)| rect)
+        .ok_or_else(|| anyhow!("window no longer exists"))?;
+
+    let ax_windows: Vec<AXUIElement> = AXUIElement::application(pid)
+        .attribute::<CFArray<AXUIElement>>(&CFString::from_static_string(kAXWindowsAttribute))
+        .map(|arr| arr.iter().map(|w| (*w).clone()).collect())
+        .unwrap_or_default();
+
+    ax_windows
+        .into_iter()
+        .find(|element| {
+            let window = Window {
+                element: element.clone(),
+            };
+            matches!(window.rect(), Ok(r) if rects_roughly_equal(r, rect))
+        })
+        .map(|element| Window { element })
+        .ok_or_else(|| anyhow!("window no longer exists"))
+}
+
 pub fn frontmost_app_pid() -> Option<pid_t> {
     Some(
         NSWorkspace::sharedWorkspace()
