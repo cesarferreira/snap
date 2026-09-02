@@ -4,6 +4,7 @@ mod ax;
 mod cli;
 mod config;
 mod display;
+mod focus_watch;
 mod history;
 mod layout;
 mod spatial;
