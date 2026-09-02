@@ -452,3 +452,134 @@ pub fn activate_app(pid: pid_t) {
         app.activateWithOptions(options);
     }
 }
+
+const FOCUS_WINDOW_RETRIES: u32 = 10;
+const FOCUS_WINDOW_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(60);
+
+/// Activates the target application's Stage Manager set before resolving
+/// and raising its recorded window. Off-stage windows are absent from the
+/// on-screen CGWindowList snapshot that [`find_window`] intentionally uses,
+/// so resolving first can never reach them.
+pub fn focus_window(pid: pid_t, window_number: i64) -> Result<()> {
+    let was_same_app = frontmost_app_pid() == Some(pid);
+    focus_window_with(
+        (pid, window_number),
+        was_same_app,
+        activate_app,
+        |pid, window_number| find_window(pid, window_number).ok(),
+        |window| window.raise(),
+        || std::thread::sleep(FOCUS_WINDOW_RETRY_DELAY),
+    )
+}
+
+fn focus_window_with<T>(
+    target: (pid_t, i64),
+    was_same_app: bool,
+    activate: impl FnOnce(pid_t),
+    mut resolve: impl FnMut(pid_t, i64) -> Option<T>,
+    mut raise: impl FnMut(&T) -> Result<()>,
+    mut wait: impl FnMut(),
+) -> Result<()> {
+    let (pid, window_number) = target;
+    activate(pid);
+    for attempt in 0..FOCUS_WINDOW_RETRIES {
+        if let Some(window) = resolve(pid, window_number) {
+            // Cross-app activation already selects that app's most recently
+            // focused window. Some apps (notably System Settings) reject
+            // AXRaise, and NSWorkspace's frontmost-app read stays stale until
+            // the process runs its event loop, so resolving the target after
+            // activation is sufficient there. Same-app window switches still
+            // require the raise to succeed so we do not accept the wrong one.
+            if raise(&window).is_ok() || !was_same_app {
+                return Ok(());
+            }
+        }
+        if attempt + 1 < FOCUS_WINDOW_RETRIES {
+            wait();
+        }
+    }
+    Err(anyhow!("window no longer exists"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn focusing_an_offstage_window_activates_its_app_before_resolving_and_retries() {
+        let activated = Cell::new(false);
+        let resolve_attempts = Cell::new(0);
+        let waits = Cell::new(0);
+        let raised = Cell::new(false);
+
+        let result = focus_window_with(
+            (42, 9001),
+            false,
+            |pid| {
+                assert_eq!(pid, 42);
+                activated.set(true);
+            },
+            |pid, window_number| {
+                assert_eq!((pid, window_number), (42, 9001));
+                assert!(activated.get(), "resolution ran before app activation");
+                let attempt = resolve_attempts.get() + 1;
+                resolve_attempts.set(attempt);
+                (attempt == 3).then_some(())
+            },
+            |_| {
+                raised.set(true);
+                Ok(())
+            },
+            || waits.set(waits.get() + 1),
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(resolve_attempts.get(), 3);
+        assert_eq!(waits.get(), 2);
+        assert!(raised.get());
+    }
+
+    #[test]
+    fn focusing_an_offstage_window_retries_a_temporarily_failed_raise() {
+        let raise_attempts = Cell::new(0);
+        let waits = Cell::new(0);
+
+        let result = focus_window_with(
+            (42, 9001),
+            true,
+            |_| {},
+            |_, _| Some(()),
+            |_| {
+                let attempt = raise_attempts.get() + 1;
+                raise_attempts.set(attempt);
+                if attempt < 3 {
+                    Err(anyhow!("stage transition still in progress"))
+                } else {
+                    Ok(())
+                }
+            },
+            || waits.set(waits.get() + 1),
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(raise_attempts.get(), 3);
+        assert_eq!(waits.get(), 2);
+    }
+
+    #[test]
+    fn cross_app_focus_succeeds_when_activation_works_but_frontmost_read_is_stale() {
+        let active = Cell::new(false);
+
+        let result = focus_window_with(
+            (42, 9001),
+            false,
+            |_| active.set(true),
+            |_, _| active.get().then_some(()),
+            |_| Err(anyhow!("target app does not support AXRaise")),
+            || {},
+        );
+
+        assert!(result.is_ok());
+    }
+}

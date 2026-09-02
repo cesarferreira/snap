@@ -581,9 +581,7 @@ fn run_last() -> anyhow::Result<()> {
     }
 
     match history::toggle(|target| {
-        let window = window::find_window(target.pid, target.window_number).ok()?;
-        window.raise().ok()?;
-        window::activate_app(target.pid);
+        window::focus_window(target.pid, target.window_number).ok()?;
         Some(())
     }) {
         Ok(()) => Ok(()),
