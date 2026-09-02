@@ -1,5 +1,6 @@
 mod accessibility;
 mod accordion;
+mod ax;
 mod cli;
 mod config;
 mod display;
@@ -768,16 +769,22 @@ fn run_stack(
             .then(all[a].rect.x.partial_cmp(&all[b].rect.x).unwrap())
     });
 
+    // Fresh cascade: rest in tile order (bottom of the stack first), focused
+    // last (front — flush against the trailing edge, on top).
+    let fresh_order = || -> Vec<usize> {
+        let mut order: Vec<usize> = visual_order.iter().copied().filter(|&i| i != 0).collect();
+        order.push(0);
+        order
+    };
+
     match action {
         None => {
             if n == 1 {
                 return all[0].window.set_rect(usable).map_err(runtime_failure);
             }
-            // Focused first, then the rest in tile order.
-            let mut order = vec![0];
-            order.extend(visual_order.iter().copied().filter(|&i| i != 0));
-            apply_accordion(&all, &order, usable, accordion_padding, 0);
-            raise_and_activate(&all[order[0]]).map_err(runtime_failure)
+            let order = fresh_order();
+            apply_cascade(&all, &order, usable, accordion_padding);
+            raise_and_activate(&all[*order.last().unwrap()]).map_err(runtime_failure)
         }
         Some(direction) => {
             if n == 1 {
@@ -785,34 +792,51 @@ fn run_stack(
                     ExitError("error: only one window".into(), EXIT_RUNTIME_FAILURE).into(),
                 );
             }
-            let order = visual_order;
-            let frames: Vec<Rect> = order.iter().map(|&i| all[i].rect).collect();
-            let current_front = accordion::detect_front(usable, accordion_padding, &frames)
+            let frames: Vec<Rect> = all.iter().map(|c| c.rect).collect();
+            let mut order = accordion::detect_order(usable, &frames)
                 // Not stacked yet: treat as `stack` (focused as front) then advance once.
-                .unwrap_or_else(|| order.iter().position(|&i| i == 0).unwrap_or(0));
+                .unwrap_or_else(fresh_order);
 
-            let new_front = match direction {
-                StackAction::Next => (current_front + 1) % n,
-                StackAction::Previous => (current_front + n - 1) % n,
-            };
-            apply_accordion(&all, &order, usable, accordion_padding, new_front);
-            raise_and_activate(&all[order[new_front]]).map_err(runtime_failure)
+            match direction {
+                StackAction::Next => order.rotate_right(1),
+                StackAction::Previous => order.rotate_left(1),
+            }
+            apply_cascade(&all, &order, usable, accordion_padding);
+            raise_and_activate(&all[*order.last().unwrap()]).map_err(runtime_failure)
         }
     }
 }
 
-/// Applies the accordion layout, best-effort — an individual unmanageable
+/// Applies the cascade layout, best-effort — an individual unmanageable
 /// window is skipped, not fatal (same policy as `snap tile`, PRD §23).
-fn apply_accordion(
-    all: &[window::TileCandidate],
-    order: &[usize],
-    usable: Rect,
-    peek: f64,
-    front: usize,
-) {
-    let rects = accordion::accordion_rects(usable, order.len(), front, peek);
-    for (pos, &idx) in order.iter().enumerate() {
-        let _ = all[idx].window.set_rect(rects[pos]);
+///
+/// Every window is the same size (see `accordion::cascade_rects`); the peek
+/// effect comes entirely from z-order, so each window is raised in bottom-
+/// to-top order (`order[0]` first, the front last) — otherwise a window
+/// placed correctly but left behind in z-order would cover the ones meant
+/// to be in front of it.
+fn apply_cascade(all: &[window::TileCandidate], order: &[usize], usable: Rect, peek: f64) {
+    let n = order.len();
+    if n == 0 {
+        return;
+    }
+    if n == 1 {
+        let _ = all[order[0]].window.set_rect(usable);
+        return;
+    }
+    let debug = std::env::var_os("SNAP_DEBUG").is_some();
+    let rects = accordion::cascade_rects(usable, n, peek);
+    for (slot, &idx) in order.iter().enumerate() {
+        let candidate = &all[idx];
+        let set_result = candidate.window.set_rect(rects[slot]);
+        let _ = candidate.window.raise();
+        if debug {
+            eprintln!(
+                "[snap debug] cascade slot={slot} idx={idx} rect={:?} set_result={set_result:?} readback={:?}",
+                rects[slot],
+                candidate.window.rect()
+            );
+        }
     }
 }
 

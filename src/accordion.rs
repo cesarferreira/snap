@@ -1,6 +1,17 @@
-//! Pure accordion/stack geometry for `snap stack`. No Accessibility calls
+//! Pure "stack of papers" geometry for `snap stack`. No Accessibility calls
 //! here — everything is unit-testable given a usable rect and a window
-//! count/front index.
+//! count.
+//!
+//! Every window in the stack is the *same size* — like real sheets of
+//! paper, not windows resized down to thin strips. The front (top of the
+//! stack, currently focused) sits flush against the trailing edge (right
+//! for wide displays, bottom for tall ones); each window behind it is
+//! offset toward the leading edge by a fixed step, so it's mostly covered
+//! by the ones in front of it and only its leading `peek`-wide sliver shows
+//! — the same effect a real messy pile of same-sized papers gives when
+//! fanned slightly. This means correct z-order matters: callers must raise
+//! each window bottom-to-top (see `main::apply_cascade`) so a window
+//! actually covers the ones behind it.
 
 use crate::layout::Rect;
 
@@ -11,8 +22,8 @@ pub enum Orientation {
 }
 
 /// Picked automatically from the display shape (AeroSpace's
-/// `default-root-container-orientation = auto`): wide/square displays peek
-/// left/right, tall ones peek top/bottom.
+/// `default-root-container-orientation = auto`): wide/square displays fan
+/// left-to-right, tall ones fan top-to-bottom.
 pub fn orientation_for(usable: Rect) -> Orientation {
     if usable.width >= usable.height {
         Orientation::Horizontal
@@ -21,67 +32,32 @@ pub fn orientation_for(usable: Rect) -> Orientation {
     }
 }
 
-/// The front (focused) window's rect among `n` total stacked windows.
-/// `n <= 1` is just `usable` (equivalent to `snap full`). For `n >= 2`, both
-/// edges are inset by `peek` unconditionally, so both peek strips always
-/// show something regardless of which window is currently front.
-pub fn front_rect(usable: Rect, n: usize, peek: f64, orientation: Orientation) -> Rect {
-    if n <= 1 {
-        return usable;
-    }
-    let peek = peek.min(match orientation {
-        Orientation::Horizontal => usable.width / 2.0,
-        Orientation::Vertical => usable.height / 2.0,
-    });
+/// The total leading-to-trailing offset budget is capped at this fraction of
+/// the display's relevant dimension, so every window (all sharing the same
+/// size) keeps a usable minimum size regardless of how many are stacked.
+const MAX_FAN_FRACTION: f64 = 0.6;
+
+pub fn primary_size(r: Rect, orientation: Orientation) -> f64 {
     match orientation {
-        Orientation::Horizontal => Rect::new(
-            usable.x + peek,
-            usable.y,
-            (usable.width - peek * 2.0).max(0.0),
-            usable.height,
-        ),
-        Orientation::Vertical => Rect::new(
-            usable.x,
-            usable.y + peek,
-            usable.width,
-            (usable.height - peek * 2.0).max(0.0),
-        ),
+        Orientation::Horizontal => r.width,
+        Orientation::Vertical => r.height,
     }
 }
 
-/// The left/top peek strip, where the "previous" window in stack order sits.
-fn prev_peek_rect(usable: Rect, peek: f64, orientation: Orientation) -> Rect {
+fn primary_coord(r: Rect, orientation: Orientation) -> f64 {
     match orientation {
-        Orientation::Horizontal => Rect::new(usable.x, usable.y, peek, usable.height),
-        Orientation::Vertical => Rect::new(usable.x, usable.y, usable.width, peek),
+        Orientation::Horizontal => r.x,
+        Orientation::Vertical => r.y,
     }
 }
 
-/// The right/bottom peek strip, where the "next" window in stack order sits.
-fn next_peek_rect(usable: Rect, peek: f64, orientation: Orientation) -> Rect {
-    match orientation {
-        Orientation::Horizontal => Rect::new(
-            usable.x + usable.width - peek,
-            usable.y,
-            peek,
-            usable.height,
-        ),
-        Orientation::Vertical => Rect::new(
-            usable.x,
-            usable.y + usable.height - peek,
-            usable.width,
-            peek,
-        ),
-    }
-}
-
-/// One rect per window in stack order (`order[k]` is the rect for the `k`th
-/// window), for `n` windows with `front` (0-based, wrapping) at the front.
-/// `front - 1` (wrapping) gets the left/top peek, `front + 1` (wrapping)
-/// gets the right/bottom peek, and every other window is hidden directly
-/// behind the front (same rect — still "in the stack" for `next`/`previous`,
-/// per the simpler v1 in the issue).
-pub fn accordion_rects(usable: Rect, n: usize, front: usize, peek: f64) -> Vec<Rect> {
+/// One rect per stack slot, all the same size: `slot[n-1]` (the front) sits
+/// flush against the trailing edge; `slot[0]` (the bottom of the stack) sits
+/// flush against the leading edge; everything in between steps evenly from
+/// one to the other. Rendered with slot 0 raised first and slot `n-1` last
+/// (see `main::apply_cascade`), each slot's leading `peek`-wide sliver is
+/// the only part not covered by the slot in front of it.
+pub fn cascade_rects(usable: Rect, n: usize, peek: f64) -> Vec<Rect> {
     if n == 0 {
         return Vec::new();
     }
@@ -89,22 +65,23 @@ pub fn accordion_rects(usable: Rect, n: usize, front: usize, peek: f64) -> Vec<R
         return vec![usable];
     }
     let orientation = orientation_for(usable);
-    let front_r = front_rect(usable, n, peek, orientation);
-    let prev_r = prev_peek_rect(usable, peek, orientation);
-    let next_r = next_peek_rect(usable, peek, orientation);
-    let prev_idx = (front + n - 1) % n;
-    let next_idx = (front + 1) % n;
+    let dim = match orientation {
+        Orientation::Horizontal => usable.width,
+        Orientation::Vertical => usable.height,
+    };
+    let count = n - 1;
+    let max_total = (dim * MAX_FAN_FRACTION).max(0.0);
+    let step = peek.min(max_total / count as f64).max(0.0);
+    let size = (dim - step * count as f64).max(0.0);
 
     (0..n)
-        .map(|k| {
-            if k == front {
-                front_r
-            } else if k == prev_idx {
-                prev_r
-            } else if k == next_idx {
-                next_r
-            } else {
-                front_r
+        .map(|slot| {
+            let offset = step * slot as f64;
+            match orientation {
+                Orientation::Horizontal => {
+                    Rect::new(usable.x + offset, usable.y, size, usable.height)
+                }
+                Orientation::Vertical => Rect::new(usable.x, usable.y + offset, usable.width, size),
             }
         })
         .collect()
@@ -114,24 +91,46 @@ pub fn accordion_rects(usable: Rect, n: usize, front: usize, peek: f64) -> Vec<R
 /// `layout.rs` — apps commonly land a few points off an exact request.
 const EPS: f64 = 20.0;
 
-fn rects_match(a: Rect, b: Rect) -> bool {
-    (a.x - b.x).abs() < EPS
-        && (a.y - b.y).abs() < EPS
-        && (a.width - b.width).abs() < EPS
-        && (a.height - b.height).abs() < EPS
-}
-
-/// Which position in `frames` (stack order) currently looks like the front,
-/// by matching [`front_rect`] — used so `snap stack next` works without
-/// tracking any state between invocations.
-pub fn detect_front(usable: Rect, peek: f64, frames: &[Rect]) -> Option<usize> {
+/// Recovers the current stack order (candidate index per slot, `frames`
+/// index space) from live window frames — used so `snap stack
+/// next`/`previous` work without tracking any state between invocations.
+/// Requires: at least 2 windows, all the same size, strictly increasing
+/// along the primary axis, and consecutive windows overlapping (the gap
+/// between them is smaller than their shared size) — that combination is
+/// specific enough to not be confused with e.g. `tile columns` (equal
+/// sizes, but no overlap: the gap equals the size) or `tile master` (one
+/// big window leading, not trailing). Returns `None` if the frames don't
+/// currently look like a cascade at all (e.g. the user dragged one).
+pub fn detect_order(usable: Rect, frames: &[Rect]) -> Option<Vec<usize>> {
     let n = frames.len();
-    if n == 0 {
+    if n < 2 {
         return None;
     }
     let orientation = orientation_for(usable);
-    let front_r = front_rect(usable, n, peek, orientation);
-    frames.iter().position(|&f| rects_match(f, front_r))
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| {
+        primary_coord(frames[a], orientation)
+            .partial_cmp(&primary_coord(frames[b], orientation))
+            .unwrap()
+    });
+    let front_size = primary_size(frames[order[n - 1]], orientation);
+    if front_size <= 0.0 {
+        return None;
+    }
+    for pair in order.windows(2) {
+        let (a, b) = (frames[pair[0]], frames[pair[1]]);
+        let gap = primary_coord(b, orientation) - primary_coord(a, orientation);
+        if gap <= EPS {
+            return None; // not strictly increasing enough to be distinct slots
+        }
+        if gap >= front_size - EPS {
+            return None; // no overlap — looks like a tile, not a cascade
+        }
+        if (primary_size(a, orientation) - front_size).abs() > EPS {
+            return None; // sizes differ — not our uniform-size cascade
+        }
+    }
+    Some(order)
 }
 
 #[cfg(test)]
@@ -163,124 +162,121 @@ mod tests {
 
     #[test]
     fn single_window_fills_usable() {
-        assert_eq!(
-            front_rect(HORIZONTAL, 1, 30.0, Orientation::Horizontal),
-            HORIZONTAL
-        );
-        let rects = accordion_rects(HORIZONTAL, 1, 0, 30.0);
+        let rects = cascade_rects(HORIZONTAL, 1, 30.0);
         assert_eq!(rects, vec![HORIZONTAL]);
     }
 
     #[test]
-    fn front_is_inset_on_both_sides_horizontal() {
-        let r = front_rect(HORIZONTAL, 2, 30.0, Orientation::Horizontal);
-        assert_eq!(
-            r,
-            Rect::new(30.0, 0.0, HORIZONTAL.width - 60.0, HORIZONTAL.height)
-        );
+    fn two_windows_same_size_front_flush_trailing() {
+        let rects = cascade_rects(HORIZONTAL, 2, 30.0);
+        let size = HORIZONTAL.width - 30.0;
+        assert_eq!(rects[0], Rect::new(0.0, 0.0, size, HORIZONTAL.height));
+        assert_eq!(rects[1], Rect::new(30.0, 0.0, size, HORIZONTAL.height));
+        // Same size, just offset — not resized to a thin sliver.
+        assert_eq!(rects[0].width, rects[1].width);
     }
 
     #[test]
-    fn front_is_inset_on_both_sides_vertical() {
-        let r = front_rect(VERTICAL, 2, 30.0, Orientation::Vertical);
-        assert_eq!(
-            r,
-            Rect::new(0.0, 30.0, VERTICAL.width, VERTICAL.height - 60.0)
-        );
+    fn two_windows_vertical_front_flush_bottom() {
+        let rects = cascade_rects(VERTICAL, 2, 30.0);
+        let size = VERTICAL.height - 30.0;
+        assert_eq!(rects[0], Rect::new(0.0, 0.0, VERTICAL.width, size));
+        assert_eq!(rects[1], Rect::new(0.0, 30.0, VERTICAL.width, size));
     }
 
     #[test]
-    fn two_windows_other_gets_a_peek_strip() {
-        let rects = accordion_rects(HORIZONTAL, 2, 0, 30.0);
-        assert_eq!(rects.len(), 2);
-        assert_eq!(
-            rects[0],
-            front_rect(HORIZONTAL, 2, 30.0, Orientation::Horizontal)
-        );
-        // The other window sits in one of the two peek strips, not hidden.
-        let peek_left = Rect::new(0.0, 0.0, 30.0, HORIZONTAL.height);
-        let peek_right = Rect::new(HORIZONTAL.width - 30.0, 0.0, 30.0, HORIZONTAL.height);
-        assert!(rects[1] == peek_left || rects[1] == peek_right);
-        assert_ne!(rects[1], rects[0]);
-    }
-
-    #[test]
-    fn three_windows_each_next_brings_a_different_window_to_front() {
-        let n = 3;
-        let peek = 30.0;
-        let mut fronts = std::collections::HashSet::new();
-        for front in 0..n {
-            let rects = accordion_rects(HORIZONTAL, n, front, peek);
-            assert_eq!(
-                rects[front],
-                front_rect(HORIZONTAL, n, peek, Orientation::Horizontal)
-            );
-            fronts.insert(front);
-        }
-        assert_eq!(fronts.len(), n);
-        // After n `next`s, we're back to the start.
-        let mut front = 0;
-        for _ in 0..n {
-            front = (front + 1) % n;
-        }
-        assert_eq!(front, 0);
-    }
-
-    #[test]
-    fn four_windows_neighbors_get_peek_strips_others_hidden_behind_front() {
+    fn four_windows_all_same_size_stepped_evenly() {
         let n = 4;
         let peek = 30.0;
-        let front = 1;
-        let rects = accordion_rects(HORIZONTAL, n, front, peek);
-        let front_r = front_rect(HORIZONTAL, n, peek, Orientation::Horizontal);
-        assert_eq!(rects[1], front_r);
-        assert_eq!(
-            rects[0],
-            prev_peek_rect(HORIZONTAL, peek, Orientation::Horizontal)
-        ); // front-1
-        assert_eq!(
-            rects[2],
-            next_peek_rect(HORIZONTAL, peek, Orientation::Horizontal)
-        ); // front+1
-        assert_eq!(rects[3], front_r); // hidden behind
+        let rects = cascade_rects(HORIZONTAL, n, peek);
+        let size = HORIZONTAL.width - peek * 3.0;
+        for (slot, r) in rects.iter().enumerate() {
+            assert_eq!(
+                *r,
+                Rect::new(peek * slot as f64, 0.0, size, HORIZONTAL.height)
+            );
+        }
+        // Every slot shares the exact same width — this is the whole point.
+        for w in rects.windows(2) {
+            assert_eq!(w[0].width, w[1].width);
+        }
+        // The front (last slot) is flush against the trailing edge.
+        assert_eq!(rects[n - 1].x + rects[n - 1].width, HORIZONTAL.width);
+        // Consecutive slots overlap substantially (that's what makes only a
+        // sliver of each visible once z-order is applied).
+        for w in rects.windows(2) {
+            let overlap = (w[0].x + w[0].width) - w[1].x;
+            assert!(overlap > 0.0 && overlap < size);
+        }
     }
 
     #[test]
-    fn peek_zero_front_still_fills_usable() {
-        let rects = accordion_rects(HORIZONTAL, 2, 0, 0.0);
+    fn peek_zero_collapses_all_windows_onto_usable() {
+        let rects = cascade_rects(HORIZONTAL, 2, 0.0);
         assert_eq!(rects[0], HORIZONTAL);
+        assert_eq!(rects[1], HORIZONTAL);
     }
 
     #[test]
-    fn detect_front_finds_the_matching_index() {
+    fn detect_order_recovers_the_permutation() {
         let n = 3;
         let peek = 30.0;
-        let rects = accordion_rects(HORIZONTAL, n, 2, peek);
-        assert_eq!(detect_front(HORIZONTAL, peek, &rects), Some(2));
+        let rects = cascade_rects(HORIZONTAL, n, peek);
+        // Windows applied in a shuffled candidate order: candidate 2 is the
+        // bottom of the stack, candidate 0 the middle, candidate 1 the front.
+        let frames = vec![rects[1], rects[2], rects[0]];
+        assert_eq!(detect_order(HORIZONTAL, &frames), Some(vec![2, 0, 1]));
     }
 
     #[test]
-    fn detect_front_none_when_frames_are_not_stacked() {
+    fn detect_order_none_when_frames_are_not_stacked() {
         let frames = [
             Rect::new(0.0, 0.0, 400.0, 400.0),
             Rect::new(400.0, 0.0, 400.0, 400.0),
         ];
-        assert_eq!(detect_front(HORIZONTAL, 30.0, &frames), None);
+        assert_eq!(detect_order(HORIZONTAL, &frames), None);
+    }
+
+    #[test]
+    fn detect_order_none_for_tile_columns_equal_size_but_no_overlap() {
+        // Equal widths, increasing x, but the gap equals the size (no
+        // overlap) — a plain tile, not a cascade.
+        let w = HORIZONTAL.width / 2.0;
+        let frames = [
+            Rect::new(0.0, 0.0, w, HORIZONTAL.height),
+            Rect::new(w, 0.0, w, HORIZONTAL.height),
+        ];
+        assert_eq!(detect_order(HORIZONTAL, &frames), None);
+    }
+
+    #[test]
+    fn detect_order_none_for_master_tile_where_sizes_differ() {
+        let frames = [
+            Rect::new(0.0, 0.0, 900.0, HORIZONTAL.height),
+            Rect::new(900.0, 0.0, 828.0, HORIZONTAL.height),
+        ];
+        assert_eq!(detect_order(HORIZONTAL, &frames), None);
     }
 
     #[test]
     fn remainder_pixels_do_not_panic_and_stay_inside_bounds() {
         let usable = Rect::new(0.0, 0.0, 1001.0, 667.0);
-        for n in 1..=4 {
-            for front in 0..n {
-                let rects = accordion_rects(usable, n, front, 30.0);
-                for r in &rects {
-                    assert!(r.x >= usable.x - 1e-9);
-                    assert!(r.y >= usable.y - 1e-9);
-                    assert!(r.x + r.width <= usable.x + usable.width + 1e-9);
-                    assert!(r.y + r.height <= usable.y + usable.height + 1e-9);
-                }
+        for n in 1..=6 {
+            let rects = cascade_rects(usable, n, 30.0);
+            for r in &rects {
+                assert!(r.x >= usable.x - 1e-9);
+                assert!(r.y >= usable.y - 1e-9);
+                assert!(r.x + r.width <= usable.x + usable.width + 1e-9);
+                assert!(r.y + r.height <= usable.y + usable.height + 1e-9);
             }
         }
+    }
+
+    #[test]
+    fn many_windows_still_leaves_a_usable_minimum_size() {
+        let usable = HORIZONTAL;
+        let n = 10;
+        let rects = cascade_rects(usable, n, 30.0);
+        assert!(rects[0].width >= usable.width * (1.0 - MAX_FAN_FRACTION) - 1e-9);
     }
 }
