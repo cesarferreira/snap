@@ -271,7 +271,9 @@ process — everything else stays one-shot. `snap daemon install` writes and
 loads a launchd user agent that watches for focus changes system-wide (not
 just snap's own actions) and remembers the two most recent windows.
 `snap last` toggles between them, the same way `snap undo` toggles a
-window's geometry. If you never run `snap daemon install`, snap behaves
+window's geometry. The daemon holds a process-lifetime lock, so accidental
+manual starts cannot create competing history writers. If you never run
+`snap daemon install`, snap behaves
 exactly as before — no daemon, nothing running in the background.
 
 ### Diagnostics

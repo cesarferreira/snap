@@ -620,6 +620,7 @@ fn run_daemon(action: DaemonCommand) -> anyhow::Result<()> {
             Ok(())
         }
         DaemonCommand::Run => {
+            let _daemon_lock = launchd::acquire_daemon_lock().map_err(runtime_failure)?;
             // `accessibility::is_trusted()` can report `true` here even
             // when it shouldn't: interactively-run snap commands inherit
             // Terminal's own Accessibility trust as their "responsible

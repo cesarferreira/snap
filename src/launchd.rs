@@ -3,12 +3,59 @@
 //! (design doc docs/superpowers/specs/2026-09-02-snap-last-design.md).
 //! Opt-in only — every other snap command remains daemon-free.
 
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Result, anyhow};
+use fs2::FileExt;
 
 pub const LABEL: &str = "com.cesarferreira.snap.focuswatch";
+
+#[derive(Debug)]
+pub struct DaemonLock {
+    _file: File,
+}
+
+fn daemon_lock_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(
+        PathBuf::from(home)
+            .join("Library")
+            .join("Caches")
+            .join("snap")
+            .join("focuswatch.lock"),
+    )
+}
+
+pub fn acquire_daemon_lock() -> Result<DaemonLock> {
+    let path = daemon_lock_path().ok_or_else(|| anyhow!("$HOME not set"))?;
+    acquire_daemon_lock_at(&path)
+}
+
+fn acquire_daemon_lock_at(path: &Path) -> Result<DaemonLock> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("invalid daemon lock path"))?;
+    std::fs::create_dir_all(parent)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
+    file.try_lock_exclusive().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            anyhow!("focus-history daemon is already running")
+        } else {
+            anyhow!("failed to acquire focus-history daemon lock: {error}")
+        }
+    })?;
+    file.set_len(0)?;
+    writeln!(file, "{}", std::process::id())?;
+    Ok(DaemonLock { _file: file })
+}
 
 pub fn plist_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
@@ -138,4 +185,34 @@ pub fn status() -> (bool, bool) {
         })
         .unwrap_or(false);
     (installed, loaded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_path() -> PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("snap-daemon-lock-test-{}-{n}", std::process::id()))
+    }
+
+    #[test]
+    fn daemon_lock_rejects_a_second_owner_and_releases_on_drop() {
+        let path = temp_path();
+        let first = acquire_daemon_lock_at(&path).unwrap();
+
+        let duplicate = acquire_daemon_lock_at(&path).unwrap_err();
+        assert_eq!(
+            duplicate.to_string(),
+            "focus-history daemon is already running"
+        );
+
+        drop(first);
+        assert!(acquire_daemon_lock_at(&path).is_ok());
+
+        let _ = std::fs::remove_file(path);
+    }
 }
