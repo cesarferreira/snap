@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-09-03
+
+### 🚀 Features
+
+- Animate window transitions ([#36](https://github.com/cesarferreira/snap/issues/36))
+
+### 💼 Other
+
+- Updated readme
+- Revise README formatting and content
+- Update README.md
+- Clean up README by removing commented-out section
+- Fix installation commands in README.md
+- No error when focus out of place
+
+### 🚜 Refactor
+
+- Remove daemon and last command ([#35](https://github.com/cesarferreira/snap/issues/35))
 ## [0.5.0] - 2026-09-02
 
 ### 🚀 Features
