@@ -334,9 +334,9 @@ snap swap down
 ```
 
 Same neighbor picker as `snap focus`. Focus stays on the originally focused
-window — it just moved. No wrap-around, no crossing displays. If a window
-can't be resized, the whole swap aborts and any already-applied half is
-restored on a best-effort basis.
+window — it just moved. No wrap-around, no crossing displays. Hitting an
+edge is a silent no-op. If a window can't be resized, the whole swap aborts
+and any already-applied half is restored on a best-effort basis.
 
 ### Accordion stack
 

@@ -813,12 +813,9 @@ fn run_swap(
     candidates.retain(|c| !rects_roughly_equal(c.rect, focused_rect));
 
     let rects: Vec<Rect> = candidates.iter().map(|c| c.rect).collect();
-    let index = neighbor_in_direction(focused_rect, &rects, direction).ok_or_else(|| {
-        ExitError(
-            format!("error: no window to the {}", direction_word(direction)),
-            EXIT_RUNTIME_FAILURE,
-        )
-    })?;
+    let Some(index) = swap_target_index(focused_rect, &rects, direction) else {
+        return Ok(());
+    };
 
     let neighbor = &candidates[index];
     let neighbor_rect = neighbor.rect;
@@ -860,6 +857,10 @@ fn direction_word(direction: Direction) -> &'static str {
         Direction::Up => "up",
         Direction::Down => "down",
     }
+}
+
+fn swap_target_index(focused_rect: Rect, rects: &[Rect], direction: Direction) -> Option<usize> {
+    neighbor_in_direction(focused_rect, rects, direction)
 }
 
 /// `snap stack [next|previous]` — one-shot accordion on the current
@@ -1049,4 +1050,17 @@ fn rects_roughly_equal(a: Rect, b: Rect) -> bool {
 
 fn runtime_failure(err: anyhow::Error) -> anyhow::Error {
     ExitError(format!("error: {err}"), EXIT_RUNTIME_FAILURE).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn swap_target_index_returns_none_at_display_edge() {
+        let focused = Rect::new(0.0, 0.0, 400.0, 400.0);
+        let right = Rect::new(400.0, 0.0, 400.0, 400.0);
+
+        assert_eq!(swap_target_index(focused, &[right], Direction::Left), None);
+    }
 }
