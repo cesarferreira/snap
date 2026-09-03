@@ -1,5 +1,6 @@
 mod accessibility;
 mod accordion;
+mod animation;
 mod ax;
 mod cli;
 mod config;
@@ -32,9 +33,10 @@ const EXIT_INVALID_ARGS: u8 = 2;
 const EXIT_ACCESSIBILITY_UNAVAILABLE: u8 = 3;
 
 fn main() -> ExitCode {
+    let animation_generation = animation::Generation::now();
     let cli = Cli::parse();
     legacy_cleanup::remove_legacy_daemon();
-    match run(cli) {
+    match run(cli, animation_generation) {
         Ok(()) => ExitCode::from(EXIT_SUCCESS),
         Err(err) => {
             if let Some(exit_err) = err.downcast_ref::<ExitError>() {
@@ -80,7 +82,43 @@ fn accessibility_unavailable() -> anyhow::Error {
     .into()
 }
 
-fn run(cli: Cli) -> anyhow::Result<()> {
+fn animate_one(
+    window: &window::Window,
+    from: Rect,
+    to: Rect,
+    animation_settings: animation::Settings,
+    complete: impl FnOnce(),
+) -> anyhow::Result<bool> {
+    let transition = animation::Transition::new(window, from, to).map_err(runtime_failure)?;
+    match animation::run(
+        &[transition],
+        animation_settings,
+        || {},
+        |applied| {
+            if applied[0] {
+                complete();
+            }
+            Ok(())
+        },
+    )
+    .map_err(runtime_failure)?
+    .remove(0)
+    {
+        animation::Outcome::Applied => Ok(true),
+        animation::Outcome::Cancelled => Ok(false),
+        animation::Outcome::Failed(error) => Err(runtime_failure(error)),
+    }
+}
+
+fn outcome_label(outcome: &animation::Outcome) -> &'static str {
+    match outcome {
+        animation::Outcome::Applied => "applied",
+        animation::Outcome::Failed(_) => "failed",
+        animation::Outcome::Cancelled => "cancelled",
+    }
+}
+
+fn run(cli: Cli, animation_generation: animation::Generation) -> anyhow::Result<()> {
     let config = config::load();
     let action = resolve_action(&cli, &config)?;
 
@@ -102,28 +140,46 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         return Err(accessibility_unavailable());
     }
 
+    let animation_settings = animation::configured(
+        config.animation_duration,
+        config.animations,
+        animation_generation,
+    );
+
     match action {
         Action::Tile { gap, layout } => run_tile(
             gap.unwrap_or(config.padding),
             config.stage_manager_width,
             layout,
+            animation_settings,
         ),
-        Action::Reposition(compute) => {
-            run_reposition(compute, config.padding, config.stage_manager_width, app)
-        }
-        Action::Display(target) => {
-            run_display_move(target, config.padding, config.stage_manager_width, app)
-        }
+        Action::Reposition(compute) => run_reposition(
+            compute,
+            config.padding,
+            config.stage_manager_width,
+            app,
+            animation_settings,
+        ),
+        Action::Display(target) => run_display_move(
+            target,
+            config.padding,
+            config.stage_manager_width,
+            app,
+            animation_settings,
+        ),
         Action::List(scope) => run_list(scope, config.stage_manager_width),
         Action::Focus(direction) => run_focus(direction, config.stage_manager_width),
-        Action::Swap(direction) => run_swap(direction, config.stage_manager_width),
+        Action::Swap(direction) => {
+            run_swap(direction, config.stage_manager_width, animation_settings)
+        }
         Action::Stack(action) => run_stack(
             action,
             config.padding,
             config.stage_manager_width,
             config.accordion_padding,
+            animation_settings,
         ),
-        Action::Undo => run_undo(config.stage_manager_width),
+        Action::Undo => run_undo(config.stage_manager_width, animation_settings),
         Action::LegacyDaemonCleanup => unreachable!("handled before the accessibility gate"),
         Action::Doctor => unreachable!("handled above before the accessibility gate"),
     }
@@ -371,6 +427,7 @@ fn run_reposition(
     padding: f64,
     stage_manager_width: f64,
     app: Option<&str>,
+    animation_duration: animation::Settings,
 ) -> anyhow::Result<()> {
     let (target, window_rect, window_number) = resolve_target(app, stage_manager_width)?;
     let target_display =
@@ -384,10 +441,11 @@ fn run_reposition(
             target_display.usable
         );
     }
-    target.set_rect(rect).map_err(runtime_failure)?;
-    if let Some(window_number) = window_number {
-        undo::record(window_number, window_rect);
-    }
+    animate_one(&target, window_rect, rect, animation_duration, || {
+        if let Some(window_number) = window_number {
+            undo::record(window_number, window_rect);
+        }
+    })?;
     Ok(())
 }
 
@@ -396,6 +454,7 @@ fn run_display_move(
     padding: f64,
     stage_manager_width: f64,
     app: Option<&str>,
+    animation_duration: animation::Settings,
 ) -> anyhow::Result<()> {
     let (focused, window_rect, window_number) = resolve_target(app, stage_manager_width)?;
 
@@ -416,10 +475,11 @@ fn run_display_move(
     let from_usable = padded(displays[current_index].usable, padding);
     let to_usable = padded(displays[dest_index].usable, padding);
     let new_rect = map_rect_between_displays(window_rect, from_usable, to_usable);
-    focused.set_rect(new_rect).map_err(runtime_failure)?;
-    if let Some(window_number) = window_number {
-        undo::record(window_number, window_rect);
-    }
+    animate_one(&focused, window_rect, new_rect, animation_duration, || {
+        if let Some(window_number) = window_number {
+            undo::record(window_number, window_rect);
+        }
+    })?;
     Ok(())
 }
 
@@ -455,6 +515,8 @@ fn run_doctor(config: &config::Config, stage_manager_width: f64) -> anyhow::Resu
     println!("  stage_manager_width = {}", config.stage_manager_width);
     println!("  almost_padding = {}", config.almost_padding);
     println!("  accordion_padding = {}", config.accordion_padding);
+    println!("  animations = {}", config.animations);
+    println!("  animation_duration = {}", config.animation_duration);
     match error_log::path() {
         Some(path) => println!("Error log: {}", path.display()),
         None => println!("Error log: unavailable ($HOME not set)"),
@@ -533,26 +595,41 @@ fn run_doctor(config: &config::Config, stage_manager_width: f64) -> anyhow::Resu
     Ok(())
 }
 
-fn run_undo(stage_manager_width: f64) -> anyhow::Result<()> {
+fn run_undo(
+    stage_manager_width: f64,
+    animation_duration: animation::Settings,
+) -> anyhow::Result<()> {
     let focused = window::Window::focused()
         .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
-    let current_rect = focused.rect().map_err(runtime_failure)?;
-    let target_display =
-        display::target_display_for(current_rect, stage_manager_width).map_err(runtime_failure)?;
-
-    let candidates = window::visible_windows_on(target_display.frame).map_err(runtime_failure)?;
-    let window_number = candidates
-        .iter()
-        .find(|c| rects_roughly_equal(c.rect, current_rect))
-        .map(|c| c.window_number)
-        .ok_or_else(|| ExitError("error: nothing to undo".into(), EXIT_RUNTIME_FAILURE))?;
-
-    let previous = undo::take_and_swap(window_number, current_rect)
-        .ok_or_else(|| ExitError("error: nothing to undo".into(), EXIT_RUNTIME_FAILURE))?;
-    focused.set_rect(previous).map_err(runtime_failure)
+    let snapshot = animation::coordinate(|| -> anyhow::Result<_> {
+        let current_rect = focused.rect().map_err(runtime_failure)?;
+        let target_display = display::target_display_for(current_rect, stage_manager_width)
+            .map_err(runtime_failure)?;
+        let candidates =
+            window::visible_windows_on(target_display.frame).map_err(runtime_failure)?;
+        let window_number = candidates
+            .iter()
+            .find(|c| rects_roughly_equal(c.rect, current_rect))
+            .map(|c| c.window_number)
+            .ok_or_else(|| ExitError("error: nothing to undo".into(), EXIT_RUNTIME_FAILURE))?;
+        let previous = undo::previous(window_number)
+            .ok_or_else(|| ExitError("error: nothing to undo".into(), EXIT_RUNTIME_FAILURE))?;
+        Ok((current_rect, window_number, previous))
+    })
+    .map_err(runtime_failure)?;
+    let (current_rect, window_number, previous) = snapshot?;
+    animate_one(&focused, current_rect, previous, animation_duration, || {
+        undo::record(window_number, current_rect)
+    })?;
+    Ok(())
 }
 
-fn run_tile(gap: f64, stage_manager_width: f64, layout: TileLayout) -> anyhow::Result<()> {
+fn run_tile(
+    gap: f64,
+    stage_manager_width: f64,
+    layout: TileLayout,
+    animation_duration: animation::Settings,
+) -> anyhow::Result<()> {
     let debug = std::env::var_os("SNAP_DEBUG").is_some();
 
     let focused = window::Window::focused()
@@ -595,16 +672,40 @@ fn run_tile(gap: f64, stage_manager_width: f64, layout: TileLayout) -> anyhow::R
     }
 
     let rects = tile::tile_rects_with_layout(usable, ordered.len(), gap, layout);
-    for (candidate, rect) in ordered.into_iter().zip(rects) {
+    let mut prepared = Vec::new();
+    let mut indices = Vec::new();
+    for (index, (candidate, &rect)) in ordered.iter().zip(&rects).enumerate() {
         // An individual unmanageable window is skipped, not fatal (PRD §23).
-        let previous_rect = candidate.rect;
-        let result = candidate.window.set_rect(rect);
-        if result.is_ok() && candidate.window_number >= 0 {
-            undo::record(candidate.window_number, previous_rect);
+        if let Ok(transition) = animation::Transition::new(&candidate.window, candidate.rect, rect)
+        {
+            prepared.push(transition);
+            indices.push(index);
         }
+    }
+    let outcomes = animation::run(
+        &prepared,
+        animation_duration,
+        || {},
+        |applied| {
+            for (&applied, &index) in applied.iter().zip(&indices) {
+                let candidate = &ordered[index];
+                if applied && candidate.window_number >= 0 {
+                    undo::record(candidate.window_number, candidate.rect);
+                }
+            }
+            Ok(())
+        },
+    )
+    .map_err(runtime_failure)?;
+    for (outcome, &index) in outcomes.iter().zip(&indices) {
+        let candidate = &ordered[index];
         if debug {
+            let requested = rects[index];
+            let outcome = outcome_label(outcome);
             let after = candidate.window.rect();
-            eprintln!("[snap debug] requested={rect:?} set_rect={result:?} actual_after={after:?}");
+            eprintln!(
+                "[snap debug] requested={requested:?} animation={outcome} actual_after={after:?}"
+            );
         }
     }
     Ok(())
@@ -696,7 +797,11 @@ fn run_focus(direction: Direction, stage_manager_width: f64) -> anyhow::Result<(
 /// `snap swap left|right|up|down` — exchanges frames with the nearest
 /// window in `direction` on the current display. Focus stays on the
 /// originally focused window (it just moved).
-fn run_swap(direction: Direction, stage_manager_width: f64) -> anyhow::Result<()> {
+fn run_swap(
+    direction: Direction,
+    stage_manager_width: f64,
+    animation_duration: animation::Settings,
+) -> anyhow::Result<()> {
     let focused = window::Window::focused()
         .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
     let focused_rect = focused.rect().map_err(runtime_failure)?;
@@ -718,12 +823,32 @@ fn run_swap(direction: Direction, stage_manager_width: f64) -> anyhow::Result<()
     let neighbor = &candidates[index];
     let neighbor_rect = neighbor.rect;
 
-    focused.set_rect(neighbor_rect).map_err(runtime_failure)?;
-    if let Err(err) = neighbor.window.set_rect(focused_rect) {
-        // Best-effort restore: the first half already moved, so put the
-        // focused window back rather than leaving a half-applied swap.
-        let _ = focused.set_rect(focused_rect);
-        return Err(runtime_failure(err));
+    // Prepare both before moving either, preserving swap's all-or-nothing
+    // validation for fixed-size or otherwise unmanageable windows.
+    let focused_transition = animation::Transition::new(&focused, focused_rect, neighbor_rect)
+        .map_err(runtime_failure)?;
+    let neighbor_transition =
+        animation::Transition::new(&neighbor.window, neighbor_rect, focused_rect)
+            .map_err(runtime_failure)?;
+    let outcomes = animation::run(
+        &[focused_transition, neighbor_transition],
+        animation_duration,
+        || {},
+        |_| Ok(()),
+    )
+    .map_err(runtime_failure)?;
+    if let Some(error) = outcomes.into_iter().find_map(|outcome| match outcome {
+        animation::Outcome::Failed(error) => Some(error),
+        _ => None,
+    }) {
+        // Best-effort restore only while this failed swap still owns the
+        // generation; an older process must never overwrite its successor.
+        animation::if_current(animation_duration, || {
+            let _ = focused.set_rect(focused_rect);
+            let _ = neighbor.window.set_rect(neighbor_rect);
+        })
+        .map_err(runtime_failure)?;
+        return Err(runtime_failure(error));
     }
     Ok(())
 }
@@ -745,6 +870,7 @@ fn run_stack(
     padding: f64,
     stage_manager_width: f64,
     accordion_padding: f64,
+    animation_duration: animation::Settings,
 ) -> anyhow::Result<()> {
     let focused = window::Window::focused()
         .map_err(|_| ExitError("error: no focused window".into(), EXIT_RUNTIME_FAILURE))?;
@@ -798,11 +924,17 @@ fn run_stack(
     match action {
         None => {
             if n == 1 {
-                return all[0].window.set_rect(usable).map_err(runtime_failure);
+                return animate_one(
+                    &all[0].window,
+                    all[0].rect,
+                    usable,
+                    animation_duration,
+                    || {},
+                )
+                .map(|_| ());
             }
             let order = fresh_order();
-            apply_cascade(&all, &order, usable, accordion_padding);
-            raise_and_activate(&all[*order.last().unwrap()]).map_err(runtime_failure)
+            apply_cascade(&all, &order, usable, accordion_padding, animation_duration)
         }
         Some(direction) => {
             if n == 1 {
@@ -819,8 +951,7 @@ fn run_stack(
                 StackAction::Next => order.rotate_right(1),
                 StackAction::Previous => order.rotate_left(1),
             }
-            apply_cascade(&all, &order, usable, accordion_padding);
-            raise_and_activate(&all[*order.last().unwrap()]).map_err(runtime_failure)
+            apply_cascade(&all, &order, usable, accordion_padding, animation_duration)
         }
     }
 }
@@ -833,29 +964,65 @@ fn run_stack(
 /// to-top order (`order[0]` first, the front last) — otherwise a window
 /// placed correctly but left behind in z-order would cover the ones meant
 /// to be in front of it.
-fn apply_cascade(all: &[window::TileCandidate], order: &[usize], usable: Rect, peek: f64) {
+fn apply_cascade(
+    all: &[window::TileCandidate],
+    order: &[usize],
+    usable: Rect,
+    peek: f64,
+    animation_duration: animation::Settings,
+) -> anyhow::Result<()> {
     let n = order.len();
     if n == 0 {
-        return;
+        return Ok(());
     }
     if n == 1 {
-        let _ = all[order[0]].window.set_rect(usable);
-        return;
+        let candidate = &all[order[0]];
+        return animate_one(
+            &candidate.window,
+            candidate.rect,
+            usable,
+            animation_duration,
+            || {},
+        )
+        .map(|_| ());
     }
     let debug = std::env::var_os("SNAP_DEBUG").is_some();
     let rects = accordion::cascade_rects(usable, n, peek);
+    let mut prepared = Vec::new();
+    let mut slots = Vec::new();
     for (slot, &idx) in order.iter().enumerate() {
         let candidate = &all[idx];
-        let set_result = candidate.window.set_rect(rects[slot]);
-        let _ = candidate.window.raise();
-        if debug {
+        if let Ok(transition) =
+            animation::Transition::new(&candidate.window, candidate.rect, rects[slot])
+        {
+            prepared.push(transition);
+            slots.push((slot, idx));
+        }
+    }
+    let front = &all[*order.last().unwrap()];
+    let outcomes = animation::run(
+        &prepared,
+        animation_duration,
+        || {
+            for &idx in order {
+                let _ = all[idx].window.raise();
+            }
+        },
+        |_| raise_and_activate(front),
+    )
+    .map_err(runtime_failure)?;
+    if debug {
+        for (outcome, &(slot, idx)) in outcomes.iter().zip(&slots) {
+            let candidate = &all[idx];
+            let outcome = outcome_label(outcome);
             eprintln!(
-                "[snap debug] cascade slot={slot} idx={idx} rect={:?} set_result={set_result:?} readback={:?}",
+                "[snap debug] cascade slot={slot} idx={idx} rect={:?} animation={outcome} readback={:?}",
                 rects[slot],
                 candidate.window.rect()
             );
         }
     }
+    Ok(())
 }
 
 fn raise_and_activate(candidate: &window::TileCandidate) -> Result<(), anyhow::Error> {

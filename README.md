@@ -415,6 +415,13 @@ almost_padding = 48
 # Set to 0 to disable the peek (front-only; `next`/`previous` still raise).
 # Default: 30.
 accordion_padding = 30
+
+# Animate window geometry changes. Default: true.
+animations = true
+
+# Window move/resize transition duration, in milliseconds. Ignored when
+# animations are disabled or macOS Reduce Motion is enabled. Default: 180.
+animation_duration = 180
 ```
 
 Stage Manager doesn't expose its strip width through any public API, so

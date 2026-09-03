@@ -20,6 +20,10 @@ pub struct Config {
     /// background windows so they show at the accordion's edges. `0`
     /// disables the peek (front-only, still raises on `next`/`previous`).
     pub accordion_padding: f64,
+    /// Whether window geometry changes should animate.
+    pub animations: bool,
+    /// Window transition duration in milliseconds when animations are enabled.
+    pub animation_duration: u64,
 }
 
 impl Default for Config {
@@ -29,6 +33,8 @@ impl Default for Config {
             stage_manager_width: 150.0,
             almost_padding: 48.0,
             accordion_padding: 30.0,
+            animations: true,
+            animation_duration: 180,
         }
     }
 }
@@ -81,6 +87,16 @@ fn parse(contents: &str) -> Config {
             "accordion_padding" => {
                 if let Ok(padding) = value.parse::<f64>() {
                     config.accordion_padding = padding;
+                }
+            }
+            "animations" => {
+                if let Ok(animations) = value.parse::<bool>() {
+                    config.animations = animations;
+                }
+            }
+            "animation_duration" => {
+                if let Some(duration) = value.parse::<u64>().ok().filter(|duration| *duration > 0) {
+                    config.animation_duration = duration;
                 }
             }
             _ => {}
@@ -143,5 +159,41 @@ mod tests {
     #[test]
     fn overrides_accordion_padding() {
         assert_eq!(parse("accordion_padding = 40").accordion_padding, 40.0);
+    }
+
+    #[test]
+    fn animation_defaults_to_a_short_transition() {
+        assert_eq!(parse("").animation_duration, 180);
+    }
+
+    #[test]
+    fn animations_are_enabled_by_default() {
+        assert!(parse("").animations);
+    }
+
+    #[test]
+    fn animations_can_be_disabled_explicitly() {
+        assert!(!parse("animations = false").animations);
+    }
+
+    #[test]
+    fn invalid_animations_value_keeps_default() {
+        assert!(parse("animations = sometimes").animations);
+    }
+
+    #[test]
+    fn zero_animation_duration_keeps_default() {
+        assert_eq!(
+            parse("animation_duration = 0").animation_duration,
+            Config::default().animation_duration
+        );
+    }
+
+    #[test]
+    fn invalid_animation_duration_keeps_default() {
+        assert_eq!(
+            parse("animation_duration = -1").animation_duration,
+            Config::default().animation_duration
+        );
     }
 }

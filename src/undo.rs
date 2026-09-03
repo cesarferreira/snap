@@ -1,5 +1,5 @@
 //! On-disk last-rect cache for `snap undo` (PRD issue #9) — deliberately
-//! the only on-disk session state snap keeps. A flat map of
+//! the only persistent layout state snap keeps. A flat map of
 //! `window_number -> {previous rect, timestamp}`, no daemon, no layout
 //! tree. Hand-rolled, line-oriented (de)serialization rather than pulling
 //! in `serde`/`serde_json`, matching this repo's `config.rs` precedent of
@@ -60,28 +60,18 @@ fn record_at(path: &Path, window_number: i64, rect: Rect) {
     save(path, &entries);
 }
 
-/// Reads the previous frame for `window_number` and swaps it with
-/// `current_rect` (toggle semantics: applying the returned rect and running
-/// `undo` again restores `current_rect`). Returns `None` — `error: nothing
-/// to undo` at the call site — when there's no fresh entry.
-pub fn take_and_swap(window_number: i64, current_rect: Rect) -> Option<Rect> {
+/// Reads the frame that undo would restore without changing the cache.
+/// Call [`record`] with the current frame only after the move completes so
+/// a cancelled animation does not claim that the toggle was applied.
+pub fn previous(window_number: i64) -> Option<Rect> {
     let path = cache_path()?;
-    take_and_swap_at(&path, window_number, current_rect)
+    previous_at(&path, window_number)
 }
 
-fn take_and_swap_at(path: &Path, window_number: i64, current_rect: Rect) -> Option<Rect> {
+fn previous_at(path: &Path, window_number: i64) -> Option<Rect> {
     let mut entries = load(path);
     prune(&mut entries);
-    let previous = entries.remove(&window_number)?;
-    entries.insert(
-        window_number,
-        Entry {
-            rect: current_rect,
-            recorded_at: now(),
-        },
-    );
-    save(path, &entries);
-    Some(previous.rect)
+    entries.get(&window_number).map(|entry| entry.rect)
 }
 
 fn prune(entries: &mut HashMap<i64, Entry>) {
@@ -201,13 +191,12 @@ mod tests {
     }
 
     #[test]
-    fn record_then_take_and_swap_restores_previous_rect() {
+    fn record_then_read_restores_previous_rect() {
         let path = temp_path();
         let original = Rect::new(0.0, 0.0, 800.0, 600.0);
         record_at(&path, 7, original);
 
-        let snapped = Rect::new(0.0, 0.0, 400.0, 600.0);
-        let restored = take_and_swap_at(&path, 7, snapped);
+        let restored = previous_at(&path, 7);
         assert_eq!(restored, Some(original));
 
         let _ = std::fs::remove_file(&path);
@@ -220,12 +209,25 @@ mod tests {
         let snapped = Rect::new(0.0, 0.0, 300.0, 300.0);
         record_at(&path, 9, original);
 
-        let first_undo = take_and_swap_at(&path, 9, snapped).unwrap();
+        let first_undo = previous_at(&path, 9).unwrap();
         assert_eq!(first_undo, original);
+        record_at(&path, 9, snapped);
 
         // Applying `first_undo` and undoing again returns to `snapped`.
-        let second_undo = take_and_swap_at(&path, 9, first_undo).unwrap();
+        let second_undo = previous_at(&path, 9).unwrap();
         assert_eq!(second_undo, snapped);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reading_previous_frame_does_not_commit_the_toggle() {
+        let path = temp_path();
+        let previous = Rect::new(1.0, 2.0, 300.0, 400.0);
+        record_at(&path, 42, previous);
+
+        assert_eq!(previous_at(&path, 42), Some(previous));
+        assert_eq!(previous_at(&path, 42), Some(previous));
 
         let _ = std::fs::remove_file(&path);
     }
@@ -233,10 +235,7 @@ mod tests {
     #[test]
     fn unknown_window_number_returns_none() {
         let path = temp_path();
-        assert_eq!(
-            take_and_swap_at(&path, 999, Rect::new(0.0, 0.0, 1.0, 1.0)),
-            None
-        );
+        assert_eq!(previous_at(&path, 999), None);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -253,10 +252,7 @@ mod tests {
         );
         save(&path, &entries);
 
-        assert_eq!(
-            take_and_swap_at(&path, 5, Rect::new(0.0, 0.0, 2.0, 2.0)),
-            None
-        );
+        assert_eq!(previous_at(&path, 5), None);
         let _ = std::fs::remove_file(&path);
     }
 
