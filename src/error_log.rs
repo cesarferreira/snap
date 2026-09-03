@@ -1,4 +1,4 @@
-//! Best-effort persistent error log shared by the CLI and focus daemon.
+//! Best-effort persistent error log for CLI failures.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -58,12 +58,12 @@ mod tests {
     fn record_at_appends_without_overwriting_existing_errors() {
         let path = temp_path();
 
-        record_at(&path, 100, "daemon", "first failure");
+        record_at(&path, 100, "window", "first failure");
         record_at(&path, 101, "cli", "second failure");
 
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "[100] daemon: first failure\n[101] cli: second failure\n"
+            "[100] window: first failure\n[101] cli: second failure\n"
         );
         let _ = std::fs::remove_file(path);
     }
