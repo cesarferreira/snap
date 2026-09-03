@@ -23,8 +23,6 @@
     <a href="#configuration">Configuration</a>
     &nbsp;·&nbsp;
     <a href="#keyboard-shortcuts">Keyboard shortcuts</a>
-    &nbsp;·&nbsp;
-    <a href="#development">Development</a>
   </p>
 </div>
 
