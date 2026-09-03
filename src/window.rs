@@ -31,6 +31,18 @@ pub struct Window {
     element: AXUIElement,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct RectChange {
+    position: bool,
+    size: bool,
+}
+
+impl RectChange {
+    pub(crate) fn is_empty(self) -> bool {
+        !self.position && !self.size
+    }
+}
+
 fn position_attr() -> CFString {
     CFString::from_static_string(kAXPositionAttribute)
 }
@@ -92,6 +104,14 @@ impl Window {
     /// would otherwise get moved into position and then fail to resize,
     /// leaving it in a half-applied, worse-looking state than before.
     pub fn set_rect(&self, rect: Rect) -> Result<()> {
+        let change = self.prepare_rect(rect)?;
+        self.apply_rect(rect, change)
+    }
+
+    /// Validates a requested frame once before an animation begins. Repeating
+    /// these AX queries for every rendered frame is both wasteful and prone to
+    /// stalling applications that service Accessibility messages slowly.
+    pub(crate) fn prepare_rect(&self, rect: Rect) -> Result<RectChange> {
         let debug = std::env::var_os("SNAP_DEBUG").is_some();
         let current = self.rect()?;
         let needs_position = !points_equal(current.x, rect.x) || !points_equal(current.y, rect.y);
@@ -109,14 +129,23 @@ impl Window {
             return Err(anyhow!("window cannot be resized"));
         }
 
-        if needs_position {
+        Ok(RectChange {
+            position: needs_position,
+            size: needs_size,
+        })
+    }
+
+    /// Applies a frame after [`Self::prepare_rect`] has established which AX
+    /// attributes are safe to write.
+    pub(crate) fn apply_rect(&self, rect: Rect, change: RectChange) -> Result<()> {
+        if change.position {
             self.set_ax_value(
                 &position_attr(),
                 kAXValueTypeCGPoint,
                 &CGPoint::new(rect.x, rect.y),
             )?;
         }
-        if needs_size {
+        if change.size {
             self.set_ax_value(
                 &size_attr(),
                 kAXValueTypeCGSize,

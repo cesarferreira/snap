@@ -19,7 +19,7 @@ Examples:
     snap center
     snap tile
 
-Each command operates immediately and exits.
+Each command starts immediately, applies a short window transition, and exits.
 
 Snap is **not** a traditional window manager. It does not continuously manage window positions, create virtual workspaces, replace Mission Control, or maintain a window tree.
 
@@ -39,10 +39,11 @@ Snap should:
 - Fill the current screen without invoking macOS native fullscreen.
 - Automatically tile visible windows on the current display.
 - Work naturally when bound to external keyboard shortcuts.
+- Animate window geometry changes without requiring a background process.
 - Behave predictably with multiple monitors.
 - Use macOS APIs directly rather than depending on Rectangle, yabai, AeroSpace, or Hammerspoon.
 
-Typical commands should complete effectively instantaneously.
+Typical commands should begin responding effectively instantaneously.
 
 ---
 
@@ -732,11 +733,13 @@ This makes most behaviour unit-testable without manipulating real windows.
 
 # 22. Performance
 
-Snap should feel instantaneous.
+Snap should respond immediately even when the visible transition takes a
+fraction of a second.
 
 Target:
 
-    typical invocation < 100 ms
+    geometry calculation and first frame < 100 ms
+    default transition duration = 180 ms
 
 after process startup where practical.
 
