@@ -11,9 +11,9 @@
     <a href="https://crates.io/crates/snap-macos"><img alt="crates.io" src="https://img.shields.io/crates/v/snap-macos.svg"></a>
   </p>
 
-  <p>
+  <!--<p>
     <img alt="snap tiling terminal windows on macOS" src="screenshot.png" width="80%">
-  </p>
+  </p> -->
 
   <p>
     <a href="#install">Install</a>
