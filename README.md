@@ -244,25 +244,6 @@ after `snap tile`, where undo restores only that one window, not the whole
 tiled group — `error: nothing to undo`, exit 1. If the cache can't be
 written, mutations still succeed; only undo may fail.
 
-### Focus history
-
-```bash
-snap daemon install   # one-time: starts the focus-history background agent
-snap last              # focus whatever was focused immediately before this
-snap last              # run it again to toggle back
-snap daemon uninstall  # stop and remove the agent
-```
-
-`snap last` is the one command in this tool backed by a background
-process — everything else stays one-shot. `snap daemon install` writes and
-loads a launchd user agent that watches for focus changes system-wide (not
-just snap's own actions) and remembers the two most recent windows.
-`snap last` toggles between them, the same way `snap undo` toggles a
-window's geometry. The daemon holds a process-lifetime lock, so accidental
-manual starts cannot create competing history writers. If you never run
-`snap daemon install`, snap behaves
-exactly as before — no daemon, nothing running in the background.
-
 ### Diagnostics
 
 ```bash
@@ -273,8 +254,8 @@ Prints everything needed to debug a broken setup: Accessibility trust,
 binary path, the effective config (and whether `~/.config/snap.toml` was
 found), Stage Manager status, every attached display with its usable
 bounds and which one is "current," the focused window, and the persistent
-error-log path (`~/Library/Logs/snap/errors.log`). CLI and focus-daemon
-failures are appended there with timestamps for later inspection. Read-only —
+error-log path (`~/Library/Logs/snap/errors.log`). CLI failures are appended
+there with timestamps for later inspection. Read-only —
 never moves a window — and, unlike every other command, doesn't require
 Accessibility to run: it reports trust status as one line among several and
 exits 0 as long as it produced a report. Safe to paste into a GitHub issue.

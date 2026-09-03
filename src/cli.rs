@@ -111,15 +111,11 @@ pub enum Command {
     /// Restore the focused window to its previous frame (toggles: a second
     /// `undo` returns to where the first one started).
     Undo,
-    /// Focus the window that was focused immediately before the current
-    /// one (toggle: a second `last` returns to where you started).
-    /// Requires the focus-history daemon: `snap daemon install`.
-    Last,
-    /// Manage the optional background daemon that tracks focus history for
-    /// `snap last`. snap has no daemon by default; this opts in.
-    Daemon {
+    /// Compatibility cleanup for a launch agent installed by an older snap.
+    #[command(name = "daemon", hide = true)]
+    LegacyDaemonCleanup {
         #[command(subcommand)]
-        action: DaemonCommand,
+        action: LegacyDaemonCommand,
     },
     /// Print Accessibility trust, config, displays, and the focused window,
     /// for debugging a broken setup. Read-only; the one other command
@@ -147,13 +143,7 @@ pub enum StackAction {
 }
 
 #[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DaemonCommand {
-    /// Install and start the focus-history launch agent (runs at login).
-    Install,
-    /// Stop and remove the focus-history launch agent.
-    Uninstall,
-    /// Internal: the long-running focus-watch process launchd invokes.
-    /// Not meant to be run directly.
+pub enum LegacyDaemonCommand {
     #[command(hide = true)]
     Run,
 }
@@ -165,6 +155,21 @@ fn parse_stack_action(s: &str) -> Result<StackAction, String> {
         _ => Err(format!(
             "invalid stack action '{s}' (expected next or previous)"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_the_retired_last_command() {
+        assert!(Cli::try_parse_from(["snap", "last"]).is_err());
+    }
+
+    #[test]
+    fn rejects_the_retired_daemon_command() {
+        assert!(Cli::try_parse_from(["snap", "daemon", "install"]).is_err());
     }
 }
 

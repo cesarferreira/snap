@@ -15,17 +15,14 @@ path = "src/main.rs"
 [dependencies]
 accessibility-sys = "0.2.0"
 anyhow = "1"
-block2 = "0.6"
 clap = { version = "4", features = ["derive"] }
 core-foundation = "0.10.1"
 core-foundation-sys = "0.8.7"
 core-graphics = "0.25.0"
-fs2 = "0.4"
 objc2 = "0.6.2"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "std",
     "libc",
-    "NSApplication",
     "NSResponder",
     "NSRunningApplication",
     "NSScreen",
@@ -35,10 +32,7 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
     "NSArray",
     "NSGeometry",
-    "NSNotification",
-    "NSOperation",
     "NSString",
-    "block2",
 ] }
 
 [profile.release]
