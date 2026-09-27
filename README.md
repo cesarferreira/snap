@@ -65,8 +65,8 @@ The first time snap needs to move a window, macOS will ask you to grant
 **Accessibility** permission (System Settings → Privacy & Security →
 Accessibility) — for the app that launched it (your terminal), since snap has
 no bundle of its own for macOS to attribute the permission to directly. If
-something still looks off, run [`snap doctor`](#diagnostics) — it's the one
-command besides `snap list` that prints on success.
+something still looks off, run [`snap doctor`](#diagnostics) for a read-only
+diagnostic report.
 
 <details>
 <summary><strong>Build from source</strong> — for development or unreleased changes</summary>
@@ -233,21 +233,23 @@ snap undo
 ```
 
 Restores the focused window to its frame from before the last mutation that
-touched it. A second `snap undo` toggles back — undo/redo as a swap, no
-stack. This is the one place snap keeps on-disk state: a flat
-`window_number → previous frame` cache at
+touched it. After `tile`, `stack`, or `layout`, it restores every window still
+in that command's group, even across displays. Moving one of those windows
+separately removes it from the group. A second `snap undo` toggles the
+restored group back — undo/redo as a swap, no stack. This is the one place
+snap keeps on-disk state: a `window_number → previous frame` cache at
 `~/Library/Caches/snap/last-frames.json`, written after every successful
 mutation (`left`/`right`/.../`tile`/`display`/...; never for failed
 commands, and `list`/`doctor` don't count). Entries older than 24h are
-pruned. If nothing is recorded for the focused window — including right
-after `snap tile`, where undo restores only that one window, not the whole
-tiled group — `error: nothing to undo`, exit 1. If the cache can't be
+pruned. If nothing is recorded for the focused window,
+`error: nothing to undo`, exit 1. If the cache can't be
 written, mutations still succeed; only undo may fail.
 
 ### Diagnostics
 
 ```bash
 snap doctor
+snap doctor --json
 ```
 
 Prints everything needed to debug a broken setup: Accessibility trust,
@@ -259,6 +261,11 @@ there with timestamps for later inspection. Read-only —
 never moves a window — and, unlike every other command, doesn't require
 Accessibility to run: it reports trust status as one line among several and
 exits 0 as long as it produced a report. Safe to paste into a GitHub issue.
+`--json` prints the same diagnostics as a JSON object, including `version`,
+`binary`, `accessibility`, `config`, `error_log`, `stage_manager`, `layouts`,
+`displays`, and `focused`. Missing paths and the focused window are `null`.
+For example, `snap doctor --json | jq '.accessibility.trusted'` checks the
+trust flag; each display has `index`, `current`, `frame`, and `usable` fields.
 
 ### Targeting a window by app name
 
@@ -277,19 +284,34 @@ otherwise its largest window (ties broken by title). Unknown app → `error:
 no window for app 'X'`, exit 1. Two distinct running processes sharing the
 same displayed name → an ambiguous-match error, exit 1.
 
-`--app` applies to size, sides, corners, `full`, `center`, and `display`.
+`--app` applies to size, sides, corners, `full`, `almost`, `center`,
+`grow`, `shrink`, `third`, and `display`.
 It is **not** supported with `tile` (a display-wide operation) — `snap --app
 Foo tile` errors; use `snap --app Foo full` instead.
+
+### Targeting a window by ID
+
+Use an ID from [`snap list`](#listing-windows) to choose one window even when
+an app has several:
+
+```bash
+snap --window 190 right 40
+```
+
+`--window` supports size, sides, corners, `full`, `center`, `almost`,
+`grow`, `shrink`, `third`, and `display`. It searches on-screen windows on
+every display. Unknown or off-screen IDs exit 1. `--window` and `--app`
+cannot be combined.
 
 ### Listing windows
 
 ```bash
 snap list                  # windows on the current display (default)
 snap list --display all    # every attached display
+snap list --json           # machine-readable details
 ```
 
-`snap list` is the one command that prints on success — everything else is
-silent by design. Same window filters and ordering as `snap tile` (focused
+`snap list` prints the windows without moving them. Same window filters and ordering as `snap tile` (focused
 first, then top-to-bottom, left-to-right):
 
 ```
@@ -300,8 +322,51 @@ ID       APP                  DISPLAY FOCUSED TITLE
 ```
 
 `ID` is the window's `kCGWindowNumber`, stable for the life of the window.
+Use it with `--window` to target that exact window.
 `TITLE` is best-effort — macOS withholds window titles without Screen
 Recording permission. No window is moved.
+
+`--json` keeps the same rows, filters, and order in a `{"windows":[...]}`
+object. Each row has `id`, `app`, `pid`, `display`, `focused`, `title`, and
+`frame` (`x`, `y`, `width`, `height`). Frames use logical points with a
+top-left origin; an unavailable title is `null`. For example:
+
+```bash
+snap list --display all --json | jq '.windows[] | select(.app=="Ghostty") | .id'
+```
+
+### Layouts
+
+Declare arrangements in `~/.config/snap.toml` and apply all running apps
+with one command:
+
+```toml
+[layouts.code]
+Ghostty = "left 60"
+"Google Chrome" = "right 40"
+Slack = "full on 2"
+```
+
+```bash
+snap layout             # list configured layouts
+snap layout code        # arrange all matching windows together
+snap layout capture code >> ~/.config/snap.toml
+```
+
+Specs accept `1`–`100` for a centered size; a side or corner plus a percent;
+`third left|center|right`; `full`; `almost`; or `center`. Add `on N` for a
+1-based display index. A missing display falls back to the window's current
+display. Apps that are not running are skipped. Cycling forms such as bare
+`left` are invalid, and every spec is validated before windows move.
+Capture prints a TOML snippet without moving windows or editing config.
+It skips apps with several windows and comments on frames it cannot match.
+When several specs match, it prefers `full`, `almost`, thirds, sides,
+corners, then centered sizes. With multiple displays, capture includes
+`on N` for each entry. A kiwi binding can run a layout directly:
+
+```toml
+"hyper+1" = { command = "~/.cargo/bin/snap layout code" }
+```
 
 ### Spatial focus
 
@@ -379,9 +444,10 @@ one display attached, `next`/`previous` fail with `error: only one display`
 
 ### Output & exit codes
 
-Successful commands print nothing, so snap is safe to bind to hotkeys and use
-in scripts, except the two read-only commands: `snap list` prints its table
-and `snap doctor` prints its report. Errors go to stderr.
+Successful window commands print nothing, so snap is safe to bind to hotkeys
+and use in scripts. `list`, `doctor`, `layout` with no name, and `layout
+capture <name>` print read-only output. `list` and `doctor` accept `--json`.
+Errors go to stderr.
 
 | Code | Meaning                          |
 | ---- | -------------------------------- |
@@ -422,6 +488,11 @@ animations = true
 # Window move/resize transition duration, in milliseconds. Ignored when
 # animations are disabled or macOS Reduce Motion is enabled. Default: 180.
 animation_duration = 180
+
+# Optional named arrangements. App keys may be bare or quoted.
+[layouts.code]
+Ghostty = "left 60"
+"Google Chrome" = "right 40"
 ```
 
 Stage Manager doesn't expose its strip width through any public API, so

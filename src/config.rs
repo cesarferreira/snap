@@ -4,6 +4,14 @@
 
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedLayout {
+    pub name: String,
+    pub entries: Vec<(String, String)>,
+}
+
+pub type Layouts = Vec<NamedLayout>;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Config {
     /// Screen-edge and inter-tile padding, in logical points, applied to
@@ -39,14 +47,14 @@ impl Default for Config {
     }
 }
 
-pub fn load() -> Config {
+pub fn load_all() -> (Config, Layouts) {
     let Some(path) = config_path() else {
-        return Config::default();
+        return (Config::default(), Vec::new());
     };
     let Ok(contents) = std::fs::read_to_string(path) else {
-        return Config::default();
+        return (Config::default(), Vec::new());
     };
-    parse(&contents)
+    parse_all(&contents)
 }
 
 pub fn config_path() -> Option<PathBuf> {
@@ -57,17 +65,85 @@ pub fn config_path() -> Option<PathBuf> {
 /// Parses `key = value` lines (`#` comments, blank lines ignored). Deliberately
 /// not a full TOML parser — a couple of scalar fields don't warrant pulling in
 /// `toml` + `serde` (PRD §22 avoids unnecessary dependencies).
+#[cfg(test)]
 fn parse(contents: &str) -> Config {
+    parse_all(contents).0
+}
+
+pub fn valid_layout_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "capture"
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+fn parse_all(contents: &str) -> (Config, Layouts) {
     let mut config = Config::default();
+    let mut layouts: Layouts = Vec::new();
+    let mut section: Option<usize> = None;
+    let mut top_level = true;
     for line in contents.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else {
+        if line.starts_with('[') && line.ends_with(']') {
+            section = None;
+            top_level = false;
+            if let Some(name) = line[1..line.len() - 1].strip_prefix("layouts.") {
+                if valid_layout_name(name) {
+                    section = Some(
+                        match layouts.iter().position(|layout| layout.name == name) {
+                            Some(index) => index,
+                            None => {
+                                layouts.push(NamedLayout {
+                                    name: name.to_string(),
+                                    entries: Vec::new(),
+                                });
+                                layouts.len() - 1
+                            }
+                        },
+                    );
+                }
+            }
+            continue;
+        }
+        let Some((key, value)) = split_assignment(line) else {
             continue;
         };
-        let value = value.trim().trim_matches('"');
+        let value = value.trim();
+        if let Some(index) = section {
+            let key = key.trim();
+            let key = if key.starts_with('"') && key.ends_with('"') && key.len() >= 2 {
+                key[1..key.len() - 1]
+                    .replace("\\\"", "\"")
+                    .replace("\\\\", "\\")
+            } else if key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
+                key.to_string()
+            } else {
+                continue;
+            };
+            if key.is_empty() || !value.starts_with('"') || !value.ends_with('"') || value.len() < 2
+            {
+                continue;
+            }
+            let value = value[1..value.len() - 1].to_string();
+            let entries = &mut layouts[index].entries;
+            if let Some(existing) = entries.iter_mut().find(|(app, _)| app == &key) {
+                existing.1 = value;
+            } else {
+                entries.push((key, value));
+            }
+            continue;
+        }
+        if !top_level {
+            continue;
+        }
+        let value = value.trim_matches('"');
         match key.trim() {
             "padding" => {
                 if let Ok(padding) = value.parse::<f64>() {
@@ -102,12 +178,67 @@ fn parse(contents: &str) -> Config {
             _ => {}
         }
     }
-    config
+    (config, layouts)
+}
+
+fn split_assignment(line: &str) -> Option<(&str, &str)> {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && quoted {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            quoted = !quoted;
+        }
+        if ch == '=' && !quoted {
+            return Some((&line[..index], &line[index + 1..]));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_ordered_layouts_and_scopes_scalar_keys() {
+        let (config, layouts) = parse_all(
+            "padding = 20\n[layouts.code]\nGhostty = \"left 60\"\n\"Google Chrome\" = \"right 40\"\npadding = 5\n[other]\npadding = 3\n[layouts.code]\nGhostty = \"full\"",
+        );
+        assert_eq!(config.padding, 20.0);
+        assert_eq!(
+            layouts[0].entries,
+            vec![
+                ("Ghostty".into(), "full".into()),
+                ("Google Chrome".into(), "right 40".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_other_sections_and_malformed_layout_lines() {
+        let (config, layouts) = parse_all(
+            "[future]\npadding = 3\n[layouts.work]\n# comment\n\nmalformed\nGhostty = left 60\n\"Google Chrome\" = \"right 40\"\n",
+        );
+        assert_eq!(config.padding, Config::default().padding);
+        assert_eq!(
+            layouts[0].entries,
+            vec![("Google Chrome".into(), "right 40".into())]
+        );
+    }
+
+    #[test]
+    fn layout_keys_can_contain_equals_and_escaped_quotes() {
+        let (_, layouts) = parse_all("[layouts.work]\n\"A=B \\\"C\\\"\" = \"full\"\n");
+        assert_eq!(layouts[0].entries[0].0, "A=B \"C\"");
+    }
 
     #[test]
     fn empty_file_uses_default() {
