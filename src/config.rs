@@ -78,7 +78,7 @@ pub fn valid_layout_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-fn parse_all(contents: &str) -> (Config, Layouts) {
+pub(crate) fn parse_all(contents: &str) -> (Config, Layouts) {
     let mut config = Config::default();
     let mut layouts: Layouts = Vec::new();
     let mut section: Option<usize> = None;
@@ -238,6 +238,16 @@ mod tests {
     fn layout_keys_can_contain_equals_and_escaped_quotes() {
         let (_, layouts) = parse_all("[layouts.work]\n\"A=B \\\"C\\\"\" = \"full\"\n");
         assert_eq!(layouts[0].entries[0].0, "A=B \"C\"");
+    }
+
+    #[test]
+    fn numbered_window_keys_remain_distinct_entries() {
+        let (_, layouts) = parse_all(
+            "[layouts.code]\n\"Ghostty[1]\" = \"left 50\"\n\"Ghostty[2]\" = \"right 50\"\n",
+        );
+        assert_eq!(layouts[0].entries.len(), 2);
+        assert_eq!(layouts[0].entries[0].0, "Ghostty[1]");
+        assert_eq!(layouts[0].entries[1].0, "Ghostty[2]");
     }
 
     #[test]

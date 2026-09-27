@@ -131,8 +131,9 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// List named layouts, apply one, or print a capture snippet. Examples:
-    /// `snap layout`, `snap layout code`, `snap layout capture code`.
+    /// List named layouts, apply one, or print a capture snippet. Numbered
+    /// entries such as "Ghostty[2]" = "window 2 right 50" select multiple windows.
+    /// Examples: `snap layout`, `snap layout code`, `snap layout capture code`.
     Layout {
         /// Layout name, or `capture` followed by a new layout name.
         name: Option<String>,

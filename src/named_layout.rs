@@ -2,6 +2,29 @@
 
 use crate::layout::{self, Position, Rect, Third};
 
+/// Parses a numbered key when the layout value explicitly starts with
+/// `window N`. Without that value prefix, the whole key is a literal app name.
+pub fn parse_window_key(key: &str) -> Option<(&str, Option<usize>)> {
+    if let Some((app, suffix)) = key.rsplit_once('[') {
+        if let Some(index) = suffix.strip_suffix(']') {
+            let index = index.parse::<usize>().ok().filter(|index| *index > 0)?;
+            return (!app.is_empty()).then_some((app, Some(index)));
+        }
+    }
+    (!key.is_empty()).then_some((key, None))
+}
+
+pub fn ordered_window_ids(ids: &[i64]) -> Vec<i64> {
+    let mut ordered = ids.to_vec();
+    ordered.sort_unstable();
+    ordered.dedup();
+    ordered
+}
+
+pub fn window_id_for_slot(ids: &[i64], index: usize) -> Option<i64> {
+    ordered_window_ids(ids).get(index.checked_sub(1)?).copied()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
     Sized(u32),
@@ -141,6 +164,17 @@ pub fn capture(usable: Rect, window: Rect, almost_padding: f64) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_selectors_use_stable_id_order() {
+        assert_eq!(parse_window_key("Ghostty"), Some(("Ghostty", None)));
+        assert_eq!(parse_window_key("Ghostty[2]"), Some(("Ghostty", Some(2))));
+        assert_eq!(parse_window_key("Ghostty[0]"), None);
+        assert_eq!(parse_window_key("Ghostty[nope]"), None);
+        assert_eq!(ordered_window_ids(&[30, 10, 20]), vec![10, 20, 30]);
+        assert_eq!(window_id_for_slot(&[30, 10, 20], 2), Some(20));
+        assert_eq!(window_id_for_slot(&[20, 30], 3), None);
+    }
 
     #[test]
     fn accepts_only_deterministic_placements() {

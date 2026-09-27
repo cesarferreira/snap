@@ -342,9 +342,9 @@ with one command:
 
 ```toml
 [layouts.code]
-Ghostty = "left 60"
-"Google Chrome" = "right 40"
-Slack = "full on 2"
+"Ghostty[1]" = "window 1 third left"
+"Ghostty[2]" = "window 2 third center"
+"Google Chrome" = "third right"
 ```
 
 ```bash
@@ -359,7 +359,18 @@ Specs accept `1`–`100` for a centered size; a side or corner plus a percent;
 display. Apps that are not running are skipped. Cycling forms such as bare
 `left` are invalid, and every spec is validated before windows move.
 Capture prints a TOML snippet without moving windows or editing config.
-It skips apps with several windows and comments on frames it cannot match.
+For several windows of one app, it writes numbered entries such as
+`"Ghostty[1]" = "window 1 third left"`. The matching number in the key and
+value identifies the selected window. The numbers follow
+ascending window ID, so moving or focusing a window does not change which
+entry selects it. A plain app key still selects the focused window of the
+frontmost app, or its largest window otherwise. A key such as `"Foo[2]"`
+without the `window 2` value prefix remains a literal app name. Numbered
+entries select currently visible windows; if those windows close and reopen in a different
+order, the numbers may refer to different windows. If a numbered slot is
+missing, the layout exits before moving any windows. Apps with the same name
+running in separate processes are skipped as ambiguous. Capture comments
+on frames it cannot match.
 If every window is skipped, it exits 1 and prints the reasons to stderr.
 When several specs match, it prefers `full`, `almost`, thirds, sides,
 corners, then centered sizes. With multiple displays, capture includes
@@ -492,8 +503,9 @@ animation_duration = 180
 
 # Optional named arrangements. App keys may be bare or quoted.
 [layouts.code]
-Ghostty = "left 60"
-"Google Chrome" = "right 40"
+"Ghostty[1]" = "window 1 third left"
+"Ghostty[2]" = "window 2 third center"
+"Google Chrome" = "third right"
 ```
 
 Stage Manager doesn't expose its strip width through any public API, so

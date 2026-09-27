@@ -446,6 +446,14 @@ fn find_window_by_id(id: i64, stage_manager_width: f64) -> anyhow::Result<window
 /// sharing the same displayed app name are reported as ambiguous rather
 /// than picked between arbitrarily.
 fn find_app_window(name: &str, stage_manager_width: f64) -> anyhow::Result<window::TileCandidate> {
+    find_app_window_with_index(name, None, stage_manager_width)
+}
+
+fn find_app_window_with_index(
+    name: &str,
+    index: Option<usize>,
+    stage_manager_width: f64,
+) -> anyhow::Result<window::TileCandidate> {
     let displays = display::ordered_displays(stage_manager_width).map_err(runtime_failure)?;
     let focused_pid = window::frontmost_app_pid();
     let focused_rect = window::Window::focused().ok().and_then(|w| w.rect().ok());
@@ -485,6 +493,24 @@ fn find_app_window(name: &str, stage_manager_width: f64) -> anyhow::Result<windo
             EXIT_RUNTIME_FAILURE,
         )
         .into());
+    }
+
+    if let Some(index) = index {
+        let ids: Vec<_> = matches
+            .iter()
+            .map(|candidate| candidate.window_number)
+            .collect();
+        let selected = named_layout::window_id_for_slot(&ids, index).ok_or_else(|| {
+            ExitError(
+                format!("error: no window for app '{name}[{index}]'"),
+                EXIT_RUNTIME_FAILURE,
+            )
+        })?;
+        let position = matches
+            .iter()
+            .position(|candidate| candidate.window_number == selected)
+            .unwrap();
+        return Ok(matches.swap_remove(position));
     }
 
     if Some(matches[0].pid) == focused_pid {
@@ -622,7 +648,7 @@ fn run_doctor(
         let invalid: Vec<_> = layout
             .entries
             .iter()
-            .filter(|(_, raw)| named_layout::parse(raw).is_none())
+            .filter(|(app, raw)| parse_layout_entry(app, raw).is_none())
             .map(|(app, _)| app.as_str())
             .collect();
         println!(
@@ -752,7 +778,7 @@ fn run_doctor_json(
         let invalid: Vec<_> = layout
             .entries
             .iter()
-            .filter(|(_, raw)| named_layout::parse(raw).is_none())
+            .filter(|(app, raw)| parse_layout_entry(app, raw).is_none())
             .map(|(app, _)| json::string(app))
             .collect();
         out.push_str(&format!(
@@ -1075,7 +1101,7 @@ fn list_layouts(layouts: &[config::NamedLayout]) -> anyhow::Result<()> {
 fn layout_specs<'a>(
     name: &str,
     layouts: &'a [config::NamedLayout],
-) -> anyhow::Result<Vec<(&'a str, named_layout::Spec)>> {
+) -> anyhow::Result<Vec<(&'a str, Option<usize>, named_layout::Spec)>> {
     let layout = layouts
         .iter()
         .find(|layout| layout.name == name)
@@ -1092,15 +1118,33 @@ fn layout_specs<'a>(
         .entries
         .iter()
         .map(|(app, raw)| {
-            named_layout::parse(raw)
-                .map(|spec| (app.as_str(), spec))
-                .ok_or_else(|| {
-                    invalid_args(format!(
-                        "error: layout '{name}': invalid spec for '{app}': \"{raw}\""
-                    ))
-                })
+            parse_layout_entry(app, raw).ok_or_else(|| {
+                invalid_args(format!(
+                    "error: layout '{name}': invalid spec for '{app}': \"{raw}\""
+                ))
+            })
         })
         .collect()
+}
+
+fn parse_layout_entry<'a>(
+    app: &'a str,
+    raw: &str,
+) -> Option<(&'a str, Option<usize>, named_layout::Spec)> {
+    if let Some(rest) = raw.strip_prefix("window ") {
+        let (ordinal, placement) = rest.split_once(' ')?;
+        let ordinal = ordinal
+            .parse::<usize>()
+            .ok()
+            .filter(|ordinal| *ordinal > 0)?;
+        let (app_name, key_ordinal) = named_layout::parse_window_key(app)?;
+        if key_ordinal != Some(ordinal) {
+            return None;
+        }
+        Some((app_name, Some(ordinal), named_layout::parse(placement)?))
+    } else {
+        Some((app, None, named_layout::parse(raw)?))
+    }
 }
 
 fn run_layout(
@@ -1113,10 +1157,14 @@ fn run_layout(
     let displays =
         display::ordered_displays(config.stage_manager_width).map_err(runtime_failure)?;
     let mut candidates = Vec::new();
-    for (app, spec) in specs {
-        let candidate = match find_app_window(app, config.stage_manager_width) {
+    for (app, index, spec) in specs {
+        let candidate = match find_app_window_with_index(app, index, config.stage_manager_width) {
             Ok(candidate) => candidate,
-            Err(err) if err.to_string().starts_with("error: no window for app") => continue,
+            Err(err)
+                if index.is_none() && err.to_string().starts_with("error: no window for app") =>
+            {
+                continue;
+            }
             Err(err) => return Err(err),
         };
         if candidates
@@ -1175,6 +1223,14 @@ fn run_layout(
     Ok(())
 }
 
+struct CaptureRow {
+    display_index: usize,
+    app: String,
+    pid: i32,
+    window_id: i64,
+    rect: Rect,
+}
+
 fn run_capture(name: &str, config: &config::Config) -> anyhow::Result<()> {
     let (candidates, _, _) = list_rows(ListScope::All, config.stage_manager_width)?;
     let displays =
@@ -1185,12 +1241,29 @@ fn run_capture(name: &str, config: &config::Config) -> anyhow::Result<()> {
         .collect();
     let rows: Vec<_> = candidates
         .into_iter()
-        .map(|(index, candidate)| (index, candidate.app_name, candidate.rect))
+        .map(|(display_index, candidate)| CaptureRow {
+            display_index,
+            app: candidate.app_name,
+            pid: candidate.pid,
+            window_id: candidate.window_number,
+            rect: candidate.rect,
+        })
         .collect();
+    let rows = dedupe_capture_rows(rows, &displays);
     let snippet = capture_snippet(name, &rows, &usable, config.almost_padding)
         .map_err(|skipped| capture_error(&skipped))?;
     println!("{snippet}");
     Ok(())
+}
+
+fn dedupe_capture_rows(rows: Vec<CaptureRow>, displays: &[display::Display]) -> Vec<CaptureRow> {
+    let mut seen = std::collections::HashSet::new();
+    rows.into_iter()
+        .filter(|row| {
+            row.display_index == display::display_index_containing(displays, row.rect)
+                && seen.insert(row.window_id)
+        })
+        .collect()
 }
 
 fn capture_error(skipped: &[String]) -> ExitError {
@@ -1204,49 +1277,59 @@ fn capture_error(skipped: &[String]) -> ExitError {
 
 fn capture_snippet(
     name: &str,
-    rows: &[(usize, String, Rect)],
+    rows: &[CaptureRow],
     usable: &[Rect],
     almost_padding: f64,
 ) -> Result<String, Vec<String>> {
-    let mut counts = std::collections::HashMap::new();
-    for (_, app, _) in rows {
-        *counts.entry(app.as_str()).or_insert(0usize) += 1;
+    let mut ids_by_app: std::collections::HashMap<&str, Vec<i64>> =
+        std::collections::HashMap::new();
+    let mut pids_by_app: std::collections::HashMap<&str, std::collections::HashSet<i32>> =
+        std::collections::HashMap::new();
+    for row in rows {
+        ids_by_app.entry(&row.app).or_default().push(row.window_id);
+        pids_by_app.entry(&row.app).or_default().insert(row.pid);
+    }
+    for ids in ids_by_app.values_mut() {
+        *ids = named_layout::ordered_window_ids(ids);
     }
     let mut lines = vec![format!("[layouts.{name}]")];
     let mut captured = 0;
-    for (row_index, (index, app, rect)) in rows.iter().enumerate() {
-        if counts[app.as_str()] > 1 {
-            if rows
-                .iter()
-                .take(row_index)
-                .any(|(_, prior_app, _)| prior_app == app)
-            {
+    for (row_index, row) in rows.iter().enumerate() {
+        let app = &row.app;
+        if pids_by_app[app.as_str()].len() > 1 {
+            if rows.iter().take(row_index).any(|prior| prior.app == *app) {
                 continue;
             }
             lines.push(format!(
-                "# {app}: {} windows open; layouts target one window per app, skipped",
-                counts[app.as_str()]
+                "# {app}: multiple running processes share this app name, skipped"
             ));
             continue;
         }
-        match named_layout::capture(usable[*index], *rect, almost_padding) {
+        let ids = &ids_by_app[app.as_str()];
+        let ordinal =
+            (ids.len() > 1).then(|| ids.iter().position(|&id| id == row.window_id).unwrap() + 1);
+        let key_name = ordinal.map_or_else(|| app.clone(), |ordinal| format!("{app}[{ordinal}]"));
+        match named_layout::capture(usable[row.display_index], row.rect, almost_padding) {
             Some(mut spec) => {
                 if usable.len() > 1 {
-                    spec.push_str(&format!(" on {}", index + 1));
+                    spec.push_str(&format!(" on {}", row.display_index + 1));
                 }
-                let key = if app
+                if let Some(ordinal) = ordinal {
+                    spec = format!("window {ordinal} {spec}");
+                }
+                let key = if key_name
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
                 {
-                    app.clone()
+                    key_name
                 } else {
-                    format!("\"{}\"", app.replace('\\', "\\\\").replace('"', "\\\""))
+                    format!("\"{}\"", key_name.replace('\\', "\\\\").replace('"', "\\\""))
                 };
                 lines.push(format!("{key} = \"{spec}\""));
                 captured += 1;
             }
-            None => lines.push(format!("# {app}: frame ({}, {}, {}x{}) doesn't match a snap placement; place it with snap and capture again",
-                rect.x, rect.y, rect.width, rect.height)),
+            None => lines.push(format!("# {key_name}: frame ({}, {}, {}x{}) doesn't match a snap placement; place it with snap and capture again",
+                row.rect.x, row.rect.y, row.rect.width, row.rect.height)),
         }
     }
     if captured == 0 {
@@ -1588,26 +1671,144 @@ mod tests {
             entries: vec![("Ghostty".into(), "left".into())],
         }];
         assert!(layout_specs("code", &invalid).is_err());
+        let multiple = vec![config::NamedLayout {
+            name: "code".into(),
+            entries: vec![
+                ("Ghostty[1]".into(), "window 1 left 50".into()),
+                ("Ghostty[2]".into(), "window 2 right 50".into()),
+            ],
+        }];
+        let specs = layout_specs("code", &multiple).unwrap();
+        assert_eq!((specs[0].0, specs[0].1), ("Ghostty", Some(1)));
+        assert_eq!((specs[1].0, specs[1].1), ("Ghostty", Some(2)));
+        assert_eq!(parse_layout_entry("Foo[2]", "left 50").unwrap().0, "Foo[2]");
+        assert_eq!(parse_layout_entry("Ghostty[2]", "window 1 left 50"), None);
     }
 
     #[test]
-    fn duplicate_app_capture_explains_why_visible_windows_were_skipped() {
+    fn capture_two_ghostty_windows_from_the_reported_frames() {
         let usable = Rect::new(201.0, 55.0, 1583.0, 1033.0);
         let rows = vec![
-            (0, "Ghostty".into(), Rect::new(201.0, 55.0, 784.0, 1033.0)),
-            (0, "Ghostty".into(), Rect::new(1000.0, 55.0, 784.0, 1033.0)),
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 1561,
+                window_id: 107,
+                rect: Rect::new(201.0, 55.0, 784.0, 1033.0),
+            },
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 1561,
+                window_id: 8613,
+                rect: Rect::new(1000.0, 55.0, 784.0, 1033.0),
+            },
         ];
         assert_eq!(
-            named_layout::capture(usable, rows[0].2, 48.0),
+            named_layout::capture(usable, rows[0].rect, 48.0),
             Some("left 50".into())
         );
         assert_eq!(
-            named_layout::capture(usable, rows[1].2, 48.0),
+            named_layout::capture(usable, rows[1].rect, 48.0),
             Some("right 50".into())
         );
+        let snippet = capture_snippet("code", &rows, &[usable], 48.0).unwrap();
+        assert!(snippet.contains("\"Ghostty[1]\" = \"window 1 left 50\""));
+        assert!(snippet.contains("\"Ghostty[2]\" = \"window 2 right 50\""));
+        let (_, layouts) = config::parse_all(&snippet);
+        let specs = layout_specs("code", &layouts).unwrap();
+        assert_eq!((specs[0].0, specs[0].1), ("Ghostty", Some(1)));
+        assert_eq!((specs[1].0, specs[1].1), ("Ghostty", Some(2)));
+    }
+
+    #[test]
+    fn capture_three_windows_of_one_app() {
+        let usable = Rect::new(201.0, 55.0, 1583.0, 1033.0);
+        let rows = vec![
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 1,
+                window_id: 30,
+                rect: directional_rect(usable, layout::Position::Right, 50),
+            },
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 1,
+                window_id: 20,
+                rect: third_rect(usable, layout::Third::Center),
+            },
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 1,
+                window_id: 10,
+                rect: directional_rect(usable, layout::Position::Left, 50),
+            },
+        ];
+        let snippet = capture_snippet("code", &rows, &[usable], 48.0).unwrap();
+        assert!(snippet.contains("\"Ghostty[1]\" = \"window 1 left 50\""));
+        assert!(snippet.contains("\"Ghostty[2]\" = \"window 2 third center\""));
+        assert!(snippet.contains("\"Ghostty[3]\" = \"window 3 right 50\""));
+    }
+
+    #[test]
+    fn capture_skips_same_named_apps_in_different_processes() {
+        let usable = Rect::new(0.0, 0.0, 1000.0, 800.0);
+        let rows = vec![
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 1,
+                window_id: 10,
+                rect: directional_rect(usable, layout::Position::Left, 50),
+            },
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 2,
+                window_id: 20,
+                rect: directional_rect(usable, layout::Position::Right, 50),
+            },
+        ];
         let skipped = capture_snippet("code", &rows, &[usable], 48.0).unwrap_err();
-        let error = capture_error(&skipped);
-        assert!(error.0.contains("Ghostty: 2 windows open"), "{}", error.0);
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].contains("multiple running processes"));
+    }
+
+    #[test]
+    fn capture_keeps_spanning_window_on_its_primary_display_once() {
+        let displays = vec![
+            display::Display {
+                frame: Rect::new(0.0, 0.0, 1000.0, 800.0),
+                usable: Rect::new(0.0, 0.0, 1000.0, 800.0),
+            },
+            display::Display {
+                frame: Rect::new(1000.0, 0.0, 1000.0, 800.0),
+                usable: Rect::new(1000.0, 0.0, 1000.0, 800.0),
+            },
+        ];
+        let frame = Rect::new(800.0, 0.0, 600.0, 800.0);
+        let rows = vec![
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 1,
+                window_id: 42,
+                rect: frame,
+            },
+            CaptureRow {
+                display_index: 1,
+                app: "Ghostty".into(),
+                pid: 1,
+                window_id: 42,
+                rect: frame,
+            },
+        ];
+        let kept = dedupe_capture_rows(rows, &displays);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].display_index, 1);
     }
 
     #[test]
