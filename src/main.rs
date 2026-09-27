@@ -1176,25 +1176,50 @@ fn run_layout(
 }
 
 fn run_capture(name: &str, config: &config::Config) -> anyhow::Result<()> {
-    let (rows, _, _) = list_rows(ListScope::All, config.stage_manager_width)?;
-    if rows.is_empty() {
-        return Err(ExitError("error: no windows to capture".into(), EXIT_RUNTIME_FAILURE).into());
-    }
+    let (candidates, _, _) = list_rows(ListScope::All, config.stage_manager_width)?;
     let displays =
         display::ordered_displays(config.stage_manager_width).map_err(runtime_failure)?;
+    let usable: Vec<_> = displays
+        .iter()
+        .map(|display| padded(display.usable, config.padding))
+        .collect();
+    let rows: Vec<_> = candidates
+        .into_iter()
+        .map(|(index, candidate)| (index, candidate.app_name, candidate.rect))
+        .collect();
+    let snippet = capture_snippet(name, &rows, &usable, config.almost_padding)
+        .map_err(|skipped| capture_error(&skipped))?;
+    println!("{snippet}");
+    Ok(())
+}
+
+fn capture_error(skipped: &[String]) -> ExitError {
+    let mut message = String::from("error: no windows to capture");
+    for reason in skipped {
+        message.push('\n');
+        message.push_str(reason.trim_start_matches("# "));
+    }
+    ExitError(message, EXIT_RUNTIME_FAILURE)
+}
+
+fn capture_snippet(
+    name: &str,
+    rows: &[(usize, String, Rect)],
+    usable: &[Rect],
+    almost_padding: f64,
+) -> Result<String, Vec<String>> {
     let mut counts = std::collections::HashMap::new();
-    for (_, candidate) in &rows {
-        *counts.entry(candidate.app_name.as_str()).or_insert(0usize) += 1;
+    for (_, app, _) in rows {
+        *counts.entry(app.as_str()).or_insert(0usize) += 1;
     }
     let mut lines = vec![format!("[layouts.{name}]")];
     let mut captured = 0;
-    for (index, candidate) in &rows {
-        let app = &candidate.app_name;
+    for (row_index, (index, app, rect)) in rows.iter().enumerate() {
         if counts[app.as_str()] > 1 {
             if rows
                 .iter()
-                .take_while(|(_, c)| c.window_number != candidate.window_number)
-                .any(|(_, c)| c.app_name == *app)
+                .take(row_index)
+                .any(|(_, prior_app, _)| prior_app == app)
             {
                 continue;
             }
@@ -1204,10 +1229,9 @@ fn run_capture(name: &str, config: &config::Config) -> anyhow::Result<()> {
             ));
             continue;
         }
-        let usable = padded(displays[*index].usable, config.padding);
-        match named_layout::capture(usable, candidate.rect, config.almost_padding) {
+        match named_layout::capture(usable[*index], *rect, almost_padding) {
             Some(mut spec) => {
-                if displays.len() > 1 {
+                if usable.len() > 1 {
                     spec.push_str(&format!(" on {}", index + 1));
                 }
                 let key = if app
@@ -1222,14 +1246,13 @@ fn run_capture(name: &str, config: &config::Config) -> anyhow::Result<()> {
                 captured += 1;
             }
             None => lines.push(format!("# {app}: frame ({}, {}, {}x{}) doesn't match a snap placement; place it with snap and capture again",
-                candidate.rect.x, candidate.rect.y, candidate.rect.width, candidate.rect.height)),
+                rect.x, rect.y, rect.width, rect.height)),
         }
     }
     if captured == 0 {
-        return Err(ExitError("error: no windows to capture".into(), EXIT_RUNTIME_FAILURE).into());
+        return Err(lines.into_iter().skip(1).collect());
     }
-    println!("{}", lines.join("\n"));
-    Ok(())
+    Ok(lines.join("\n"))
 }
 
 /// `snap focus left|right|up|down` — raises/activates the nearest window in
@@ -1565,6 +1588,26 @@ mod tests {
             entries: vec![("Ghostty".into(), "left".into())],
         }];
         assert!(layout_specs("code", &invalid).is_err());
+    }
+
+    #[test]
+    fn duplicate_app_capture_explains_why_visible_windows_were_skipped() {
+        let usable = Rect::new(201.0, 55.0, 1583.0, 1033.0);
+        let rows = vec![
+            (0, "Ghostty".into(), Rect::new(201.0, 55.0, 784.0, 1033.0)),
+            (0, "Ghostty".into(), Rect::new(1000.0, 55.0, 784.0, 1033.0)),
+        ];
+        assert_eq!(
+            named_layout::capture(usable, rows[0].2, 48.0),
+            Some("left 50".into())
+        );
+        assert_eq!(
+            named_layout::capture(usable, rows[1].2, 48.0),
+            Some("right 50".into())
+        );
+        let skipped = capture_snippet("code", &rows, &[usable], 48.0).unwrap_err();
+        let error = capture_error(&skipped);
+        assert!(error.0.contains("Ghostty: 2 windows open"), "{}", error.0);
     }
 
     #[test]

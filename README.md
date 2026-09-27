@@ -360,6 +360,7 @@ display. Apps that are not running are skipped. Cycling forms such as bare
 `left` are invalid, and every spec is validated before windows move.
 Capture prints a TOML snippet without moving windows or editing config.
 It skips apps with several windows and comments on frames it cannot match.
+If every window is skipped, it exits 1 and prints the reasons to stderr.
 When several specs match, it prefers `full`, `almost`, thirds, sides,
 corners, then centered sizes. With multiple displays, capture includes
 `on N` for each entry. A kiwi binding can run a layout directly:
