@@ -6,8 +6,10 @@ mod cli;
 mod config;
 mod display;
 mod error_log;
+mod json;
 mod layout;
 mod legacy_cleanup;
+mod named_layout;
 mod spatial;
 mod tile;
 mod undo;
@@ -119,14 +121,22 @@ fn outcome_label(outcome: &animation::Outcome) -> &'static str {
 }
 
 fn run(cli: Cli, animation_generation: animation::Generation) -> anyhow::Result<()> {
-    let config = config::load();
+    let (config, layouts) = config::load_all();
     let action = resolve_action(&cli, &config)?;
 
     // `doctor` reports Accessibility status rather than requiring it —
     // unlike every other command, it must still produce output (and exit
     // 0) when snap isn't trusted yet.
-    if let Action::Doctor = action {
-        return run_doctor(&config, config.stage_manager_width);
+    if let Action::Doctor { json } = action {
+        return run_doctor(&config, &layouts, config.stage_manager_width, json);
+    }
+
+    if let Action::Layout(None) = action {
+        return list_layouts(&layouts);
+    }
+
+    if let Action::Layout(Some(LayoutAction::Apply(ref name))) = action {
+        layout_specs(name, &layouts)?;
     }
 
     if let Action::LegacyDaemonCleanup = action {
@@ -134,6 +144,7 @@ fn run(cli: Cli, animation_generation: animation::Generation) -> anyhow::Result<
     }
 
     let app = cli.app.as_deref();
+    let window_id = cli.window;
 
     if !accessibility::is_trusted() {
         accessibility::prompt_for_trust();
@@ -158,6 +169,7 @@ fn run(cli: Cli, animation_generation: animation::Generation) -> anyhow::Result<
             config.padding,
             config.stage_manager_width,
             app,
+            window_id,
             animation_settings,
         ),
         Action::Display(target) => run_display_move(
@@ -165,9 +177,10 @@ fn run(cli: Cli, animation_generation: animation::Generation) -> anyhow::Result<
             config.padding,
             config.stage_manager_width,
             app,
+            window_id,
             animation_settings,
         ),
-        Action::List(scope) => run_list(scope, config.stage_manager_width),
+        Action::List(scope, json) => run_list(scope, config.stage_manager_width, json),
         Action::Focus(direction) => run_focus(direction, config.stage_manager_width),
         Action::Swap(direction) => {
             run_swap(direction, config.stage_manager_width, animation_settings)
@@ -180,8 +193,13 @@ fn run(cli: Cli, animation_generation: animation::Generation) -> anyhow::Result<
             animation_settings,
         ),
         Action::Undo => run_undo(config.stage_manager_width, animation_settings),
+        Action::Layout(Some(LayoutAction::Apply(name))) => {
+            run_layout(&name, &layouts, &config, animation_settings)
+        }
+        Action::Layout(Some(LayoutAction::Capture(name))) => run_capture(&name, &config),
+        Action::Layout(None) => unreachable!("handled before the accessibility gate"),
         Action::LegacyDaemonCleanup => unreachable!("handled before the accessibility gate"),
-        Action::Doctor => unreachable!("handled above before the accessibility gate"),
+        Action::Doctor { .. } => unreachable!("handled above before the accessibility gate"),
     }
 }
 
@@ -196,17 +214,48 @@ enum Action {
         layout: TileLayout,
     },
     Display(DisplayTarget),
-    List(ListScope),
+    List(ListScope, bool),
     Focus(Direction),
     Swap(Direction),
     Stack(Option<StackAction>),
     Undo,
     LegacyDaemonCleanup,
-    Doctor,
+    Doctor {
+        json: bool,
+    },
+    Layout(Option<LayoutAction>),
+}
+
+enum LayoutAction {
+    Apply(String),
+    Capture(String),
 }
 
 fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> {
+    if cli.window.is_some() {
+        let supported = cli.command.as_ref().is_none_or(|command| {
+            command.as_position_and_size().is_some()
+                || matches!(
+                    command,
+                    Command::Full
+                        | Command::Center
+                        | Command::Grow
+                        | Command::Shrink
+                        | Command::Almost
+                        | Command::Third { .. }
+                        | Command::Display { .. }
+                )
+        });
+        if !supported {
+            return Err(invalid_args(
+                "error: --window is not supported with this command",
+            ));
+        }
+    }
     if let Some(command) = &cli.command {
+        if cli.app.is_some() && matches!(command, Command::Layout { .. }) {
+            return Err(invalid_args("error: --app is not supported with layout"));
+        }
         if let Some((position, size)) = command.as_position_and_size() {
             return match size {
                 Some(size) => {
@@ -256,7 +305,7 @@ fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> 
                 })
             }
             Command::Display { target } => Ok(Action::Display(*target)),
-            Command::List { display } => Ok(Action::List(*display)),
+            Command::List { display, json } => Ok(Action::List(*display, *json)),
             Command::Focus { direction } => Ok(Action::Focus(*direction)),
             Command::Swap { direction } => Ok(Action::Swap(*direction)),
             Command::Stack { action } => Ok(Action::Stack(*action)),
@@ -264,7 +313,24 @@ fn resolve_action(cli: &Cli, config: &config::Config) -> anyhow::Result<Action> 
             Command::LegacyDaemonCleanup {
                 action: LegacyDaemonCommand::Run,
             } => Ok(Action::LegacyDaemonCleanup),
-            Command::Doctor => Ok(Action::Doctor),
+            Command::Doctor { json } => Ok(Action::Doctor { json: *json }),
+            Command::Layout { name, capture_name } => {
+                let action = match (name.as_deref(), capture_name.as_deref()) {
+                    (None, None) => None,
+                    (Some("capture"), Some(name)) if config::valid_layout_name(name) => {
+                        Some(LayoutAction::Capture(name.into()))
+                    }
+                    (Some(name), None) if config::valid_layout_name(name) => {
+                        Some(LayoutAction::Apply(name.into()))
+                    }
+                    _ => {
+                        return Err(invalid_args(
+                            "error: invalid layout name or capture command",
+                        ));
+                    }
+                };
+                Ok(Action::Layout(action))
+            }
             Command::Third { position } => match position {
                 Some(third) => {
                     let third = *third;
@@ -324,8 +390,13 @@ fn validate_size(size: u32) -> anyhow::Result<()> {
 /// work for that one mutation.
 fn resolve_target(
     app: Option<&str>,
+    window_id: Option<i64>,
     stage_manager_width: f64,
 ) -> anyhow::Result<(window::Window, Rect, Option<i64>)> {
+    if let Some(id) = window_id {
+        let candidate = find_window_by_id(id, stage_manager_width)?;
+        return Ok((candidate.window, candidate.rect, Some(id)));
+    }
     match app {
         None => {
             let window = window::Window::focused()
@@ -350,6 +421,24 @@ fn resolve_target(
     }
 }
 
+fn find_window_by_id(id: i64, stage_manager_width: f64) -> anyhow::Result<window::TileCandidate> {
+    let displays = display::ordered_displays(stage_manager_width).map_err(runtime_failure)?;
+    for display in displays {
+        if let Some(candidate) = window::visible_windows_on(display.frame)
+            .map_err(runtime_failure)?
+            .into_iter()
+            .find(|candidate| candidate.window_number == id)
+        {
+            return Ok(candidate);
+        }
+    }
+    Err(ExitError(
+        format!("error: no window with id {id}"),
+        EXIT_RUNTIME_FAILURE,
+    )
+    .into())
+}
+
 /// `--app NAME` resolution (PRD issue #4): exact, case-insensitive match on
 /// `kCGWindowOwnerName` across every attached display. If the app is
 /// frontmost, its currently focused window wins; otherwise its largest
@@ -357,6 +446,14 @@ fn resolve_target(
 /// sharing the same displayed app name are reported as ambiguous rather
 /// than picked between arbitrarily.
 fn find_app_window(name: &str, stage_manager_width: f64) -> anyhow::Result<window::TileCandidate> {
+    find_app_window_with_index(name, None, stage_manager_width)
+}
+
+fn find_app_window_with_index(
+    name: &str,
+    index: Option<usize>,
+    stage_manager_width: f64,
+) -> anyhow::Result<window::TileCandidate> {
     let displays = display::ordered_displays(stage_manager_width).map_err(runtime_failure)?;
     let focused_pid = window::frontmost_app_pid();
     let focused_rect = window::Window::focused().ok().and_then(|w| w.rect().ok());
@@ -398,6 +495,24 @@ fn find_app_window(name: &str, stage_manager_width: f64) -> anyhow::Result<windo
         .into());
     }
 
+    if let Some(index) = index {
+        let ids: Vec<_> = matches
+            .iter()
+            .map(|candidate| candidate.window_number)
+            .collect();
+        let selected = named_layout::window_id_for_slot(&ids, index).ok_or_else(|| {
+            ExitError(
+                format!("error: no window for app '{name}[{index}]'"),
+                EXIT_RUNTIME_FAILURE,
+            )
+        })?;
+        let position = matches
+            .iter()
+            .position(|candidate| candidate.window_number == selected)
+            .unwrap();
+        return Ok(matches.swap_remove(position));
+    }
+
     if Some(matches[0].pid) == focused_pid {
         if let Some(idx) =
             focused_rect.and_then(|fr| matches.iter().position(|c| rects_roughly_equal(fr, c.rect)))
@@ -427,9 +542,10 @@ fn run_reposition(
     padding: f64,
     stage_manager_width: f64,
     app: Option<&str>,
+    window_id: Option<i64>,
     animation_duration: animation::Settings,
 ) -> anyhow::Result<()> {
-    let (target, window_rect, window_number) = resolve_target(app, stage_manager_width)?;
+    let (target, window_rect, window_number) = resolve_target(app, window_id, stage_manager_width)?;
     let target_display =
         display::target_display_for(window_rect, stage_manager_width).map_err(runtime_failure)?;
 
@@ -454,9 +570,11 @@ fn run_display_move(
     padding: f64,
     stage_manager_width: f64,
     app: Option<&str>,
+    window_id: Option<i64>,
     animation_duration: animation::Settings,
 ) -> anyhow::Result<()> {
-    let (focused, window_rect, window_number) = resolve_target(app, stage_manager_width)?;
+    let (focused, window_rect, window_number) =
+        resolve_target(app, window_id, stage_manager_width)?;
 
     let displays = display::ordered_displays(stage_manager_width).map_err(runtime_failure)?;
     if displays.len() == 1 && matches!(target, DisplayTarget::Next | DisplayTarget::Previous) {
@@ -489,7 +607,15 @@ fn run_display_move(
 /// every other command it does not require Accessibility trust to run: it
 /// reports trust status as one line among several, exiting 0 as long as it
 /// could produce a report at all.
-fn run_doctor(config: &config::Config, stage_manager_width: f64) -> anyhow::Result<()> {
+fn run_doctor(
+    config: &config::Config,
+    layouts: &[config::NamedLayout],
+    stage_manager_width: f64,
+    json_output: bool,
+) -> anyhow::Result<()> {
+    if json_output {
+        return run_doctor_json(config, layouts, stage_manager_width);
+    }
     println!("snap {}", env!("CARGO_PKG_VERSION"));
     if let Ok(path) = std::env::current_exe() {
         println!("binary: {}", path.display());
@@ -517,6 +643,25 @@ fn run_doctor(config: &config::Config, stage_manager_width: f64) -> anyhow::Resu
     println!("  accordion_padding = {}", config.accordion_padding);
     println!("  animations = {}", config.animations);
     println!("  animation_duration = {}", config.animation_duration);
+    println!("Layouts:");
+    for layout in layouts {
+        let invalid: Vec<_> = layout
+            .entries
+            .iter()
+            .filter(|(app, raw)| parse_layout_entry(app, raw).is_none())
+            .map(|(app, _)| app.as_str())
+            .collect();
+        println!(
+            "  {}: {} entries{}",
+            layout.name,
+            layout.entries.len(),
+            if invalid.is_empty() {
+                String::new()
+            } else {
+                format!(" (invalid: {})", invalid.join(", "))
+            }
+        );
+    }
     match error_log::path() {
         Some(path) => println!("Error log: {}", path.display()),
         None => println!("Error log: unavailable ($HOME not set)"),
@@ -595,6 +740,97 @@ fn run_doctor(config: &config::Config, stage_manager_width: f64) -> anyhow::Resu
     Ok(())
 }
 
+fn run_doctor_json(
+    config: &config::Config,
+    layouts: &[config::NamedLayout],
+    stage_manager_width: f64,
+) -> anyhow::Result<()> {
+    let trusted = accessibility::is_trusted();
+    let config_path = config::config_path();
+    let found = config_path.as_ref().is_some_and(|path| path.exists());
+    let stage_manager_on = display::stage_manager_enabled();
+    let displays = display::ordered_displays(stage_manager_width).unwrap_or_default();
+    let focused_rect = window::Window::focused().ok().and_then(|w| w.rect().ok());
+    let current_index = focused_rect.map(|rect| display::display_index_containing(&displays, rect));
+    let mut out = format!(
+        "{{\"version\":{},\"binary\":{},\"accessibility\":{{\"trusted\":{trusted}}},\"config\":{{\"path\":{},\"found\":{found},\"padding\":{},\"stage_manager_width\":{},\"almost_padding\":{},\"accordion_padding\":{},\"animations\":{},\"animation_duration\":{}}},\"error_log\":{},\"stage_manager\":{{\"enabled\":{stage_manager_on},\"inset_applied\":{}}},\"layouts\":[",
+        json::string(env!("CARGO_PKG_VERSION")),
+        json::optional(
+            std::env::current_exe()
+                .ok()
+                .as_ref()
+                .and_then(|p| p.to_str())
+        ),
+        json::optional(config_path.as_ref().and_then(|p| p.to_str())),
+        json::number(config.padding),
+        json::number(config.stage_manager_width),
+        json::number(config.almost_padding),
+        json::number(config.accordion_padding),
+        config.animations,
+        config.animation_duration,
+        json::optional(error_log::path().as_ref().and_then(|p| p.to_str())),
+        stage_manager_on && config.stage_manager_width > 0.0
+    );
+    for (i, layout) in layouts.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let invalid: Vec<_> = layout
+            .entries
+            .iter()
+            .filter(|(app, raw)| parse_layout_entry(app, raw).is_none())
+            .map(|(app, _)| json::string(app))
+            .collect();
+        out.push_str(&format!(
+            "{{\"name\":{},\"entries\":{},\"invalid\":[{}]}}",
+            json::string(&layout.name),
+            layout.entries.len(),
+            invalid.join(",")
+        ));
+    }
+    out.push_str("],\"displays\":[");
+    for (i, display) in displays.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"index\":{},\"current\":{},\"frame\":{},\"usable\":{}}}",
+            i + 1,
+            current_index == Some(i),
+            json::rect(display.frame),
+            json::rect(display.usable)
+        ));
+    }
+    out.push_str("],\"focused\":");
+    match focused_rect {
+        None => out.push_str("null"),
+        Some(rect) => {
+            let candidate = current_index
+                .and_then(|i| displays.get(i))
+                .and_then(|d| window::visible_windows_on(d.frame).ok())
+                .and_then(|candidates| {
+                    candidates
+                        .into_iter()
+                        .find(|c| rects_roughly_equal(c.rect, rect))
+                });
+            let app = candidate.as_ref().map(|c| c.app_name.as_str());
+            let title = candidate.as_ref().and_then(|c| c.title.as_deref());
+            out.push_str(&format!(
+                "{{\"app\":{},\"title\":{},\"display\":{},\"frame\":{}}}",
+                json::optional(app),
+                json::optional(title),
+                current_index
+                    .map(|i| (i + 1).to_string())
+                    .unwrap_or_else(|| "null".into()),
+                json::rect(rect)
+            ));
+        }
+    }
+    out.push('}');
+    println!("{out}");
+    Ok(())
+}
+
 fn run_undo(
     stage_manager_width: f64,
     animation_duration: animation::Settings,
@@ -612,15 +848,66 @@ fn run_undo(
             .find(|c| rects_roughly_equal(c.rect, current_rect))
             .map(|c| c.window_number)
             .ok_or_else(|| ExitError("error: nothing to undo".into(), EXIT_RUNTIME_FAILURE))?;
-        let previous = undo::previous(window_number)
-            .ok_or_else(|| ExitError("error: nothing to undo".into(), EXIT_RUNTIME_FAILURE))?;
-        Ok((current_rect, window_number, previous))
+        let previous = undo::previous_group(window_number);
+        if previous.is_empty() {
+            return Err(ExitError("error: nothing to undo".into(), EXIT_RUNTIME_FAILURE).into());
+        }
+        Ok(previous)
     })
     .map_err(runtime_failure)?;
-    let (current_rect, window_number, previous) = snapshot?;
-    animate_one(&focused, current_rect, previous, animation_duration, || {
-        undo::record(window_number, current_rect)
-    })?;
+    let previous = snapshot?;
+    let displays = display::ordered_displays(stage_manager_width).map_err(runtime_failure)?;
+    let mut candidates = Vec::new();
+    for display in displays {
+        candidates.extend(window::visible_windows_on(display.frame).map_err(runtime_failure)?);
+    }
+    let mut moves = Vec::new();
+    for (id, rect) in previous {
+        if let Some(candidate) = candidates
+            .iter()
+            .find(|candidate| candidate.window_number == id)
+        {
+            moves.push((candidate, rect));
+        }
+    }
+    let mut transitions = Vec::new();
+    let mut indices = Vec::new();
+    for (index, (candidate, rect)) in moves.iter().enumerate() {
+        if let Ok(transition) = animation::Transition::new(&candidate.window, candidate.rect, *rect)
+        {
+            transitions.push(transition);
+            indices.push(index);
+        }
+    }
+    if transitions.is_empty() {
+        return Err(ExitError("error: nothing to undo".into(), EXIT_RUNTIME_FAILURE).into());
+    }
+    animation::run(
+        &transitions,
+        animation_duration,
+        || {},
+        |applied| {
+            let toggled: Vec<_> = applied
+                .iter()
+                .zip(&indices)
+                .filter_map(|(&applied, &index)| {
+                    if applied {
+                        let c = moves[index].0;
+                        Some((c.window_number, c.rect))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if toggled.len() > 1 {
+                undo::record_group(&toggled);
+            } else if let Some(&(id, rect)) = toggled.first() {
+                undo::record(id, rect);
+            }
+            Ok(())
+        },
+    )
+    .map_err(runtime_failure)?;
     Ok(())
 }
 
@@ -687,12 +974,16 @@ fn run_tile(
         animation_duration,
         || {},
         |applied| {
-            for (&applied, &index) in applied.iter().zip(&indices) {
-                let candidate = &ordered[index];
-                if applied && candidate.window_number >= 0 {
-                    undo::record(candidate.window_number, candidate.rect);
-                }
-            }
+            let moved: Vec<_> = applied
+                .iter()
+                .zip(&indices)
+                .filter_map(|(&applied, &index)| {
+                    let candidate = &ordered[index];
+                    (applied && candidate.window_number >= 0)
+                        .then_some((candidate.window_number, candidate.rect))
+                })
+                .collect();
+            undo::record_group(&moved);
             Ok(())
         },
     )
@@ -711,9 +1002,14 @@ fn run_tile(
     Ok(())
 }
 
-/// `snap list` — read-only, the one command allowed to print on success
-/// (PRD §29). Uses the same candidate set/filters as `snap tile`.
-fn run_list(scope: ListScope, stage_manager_width: f64) -> anyhow::Result<()> {
+/// `snap list` — read-only. Uses the same candidate set/filters as `snap tile`.
+type ListRows = (
+    Vec<(usize, window::TileCandidate)>,
+    Option<i32>,
+    Option<Rect>,
+);
+
+fn list_rows(scope: ListScope, stage_manager_width: f64) -> anyhow::Result<ListRows> {
     let focused_pid = window::frontmost_app_pid();
     let focused_rect = window::Window::focused().ok().and_then(|w| w.rect().ok());
 
@@ -747,6 +1043,28 @@ fn run_list(scope: ListScope, stage_manager_width: f64) -> anyhow::Result<()> {
         rows.insert(0, focused_row);
     }
 
+    Ok((rows, focused_pid, focused_rect))
+}
+
+fn run_list(scope: ListScope, stage_manager_width: f64, json: bool) -> anyhow::Result<()> {
+    let (rows, focused_pid, focused_rect) = list_rows(scope, stage_manager_width)?;
+    if json {
+        let mut out = String::from("{\"windows\":[");
+        for (i, (display_index, candidate)) in rows.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let is_focused = i == 0
+                && Some(candidate.pid) == focused_pid
+                && focused_rect.is_some_and(|r| rects_roughly_equal(r, candidate.rect));
+            out.push_str(&format!("{{\"id\":{},\"app\":{},\"pid\":{},\"display\":{},\"focused\":{},\"title\":{},\"frame\":{}}}",
+                candidate.window_number, json::string(&candidate.app_name), candidate.pid, display_index + 1,
+                is_focused, candidate.title.as_deref().map(json::string).unwrap_or_else(|| "null".into()), json::rect(candidate.rect)));
+        }
+        out.push_str("]}");
+        println!("{out}");
+        return Ok(());
+    }
     println!(
         "{:<8} {:<20} {:<7} {:<7} TITLE",
         "ID", "APP", "DISPLAY", "FOCUSED"
@@ -765,6 +1083,259 @@ fn run_list(scope: ListScope, stage_manager_width: f64) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+fn list_layouts(layouts: &[config::NamedLayout]) -> anyhow::Result<()> {
+    if layouts.is_empty() {
+        println!("No layouts configured; add [layouts.name] to ~/.config/snap.toml");
+    }
+    for layout in layouts {
+        println!("{}:", layout.name);
+        for (app, spec) in &layout.entries {
+            println!("  {app} = \"{spec}\"");
+        }
+    }
+    Ok(())
+}
+
+fn layout_specs<'a>(
+    name: &str,
+    layouts: &'a [config::NamedLayout],
+) -> anyhow::Result<Vec<(&'a str, Option<usize>, named_layout::Spec)>> {
+    let layout = layouts
+        .iter()
+        .find(|layout| layout.name == name)
+        .ok_or_else(|| invalid_args(format!("error: no layout named '{name}'")))?;
+    let mut seen = std::collections::HashSet::new();
+    for (app, _) in &layout.entries {
+        if !seen.insert(app.to_ascii_lowercase()) {
+            return Err(invalid_args(format!(
+                "error: layout '{name}': duplicate app '{app}'"
+            )));
+        }
+    }
+    layout
+        .entries
+        .iter()
+        .map(|(app, raw)| {
+            parse_layout_entry(app, raw).ok_or_else(|| {
+                invalid_args(format!(
+                    "error: layout '{name}': invalid spec for '{app}': \"{raw}\""
+                ))
+            })
+        })
+        .collect()
+}
+
+fn parse_layout_entry<'a>(
+    app: &'a str,
+    raw: &str,
+) -> Option<(&'a str, Option<usize>, named_layout::Spec)> {
+    if let Some(rest) = raw.strip_prefix("window ") {
+        let (ordinal, placement) = rest.split_once(' ')?;
+        let ordinal = ordinal
+            .parse::<usize>()
+            .ok()
+            .filter(|ordinal| *ordinal > 0)?;
+        let (app_name, key_ordinal) = named_layout::parse_window_key(app)?;
+        if key_ordinal != Some(ordinal) {
+            return None;
+        }
+        Some((app_name, Some(ordinal), named_layout::parse(placement)?))
+    } else {
+        Some((app, None, named_layout::parse(raw)?))
+    }
+}
+
+fn run_layout(
+    name: &str,
+    layouts: &[config::NamedLayout],
+    config: &config::Config,
+    animation_settings: animation::Settings,
+) -> anyhow::Result<()> {
+    let specs = layout_specs(name, layouts)?;
+    let displays =
+        display::ordered_displays(config.stage_manager_width).map_err(runtime_failure)?;
+    let mut candidates = Vec::new();
+    for (app, index, spec) in specs {
+        let candidate = match find_app_window_with_index(app, index, config.stage_manager_width) {
+            Ok(candidate) => candidate,
+            Err(err)
+                if index.is_none() && err.to_string().starts_with("error: no window for app") =>
+            {
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
+        if candidates
+            .iter()
+            .any(|(existing, _): &(window::TileCandidate, Rect)| {
+                existing.window_number == candidate.window_number
+            })
+        {
+            return Err(invalid_args(format!(
+                "error: layout '{name}': multiple entries target window {}",
+                candidate.window_number
+            )));
+        }
+        let current = display::display_index_containing(&displays, candidate.rect);
+        let target = spec
+            .display
+            .and_then(|index| displays.get(index - 1))
+            .unwrap_or(&displays[current]);
+        let usable = padded(target.usable, config.padding);
+        let rect = spec.rect(usable, candidate.rect, config.almost_padding);
+        candidates.push((candidate, rect));
+    }
+    if candidates.is_empty() {
+        return Err(ExitError(
+            format!("error: no windows for layout '{name}'"),
+            EXIT_RUNTIME_FAILURE,
+        )
+        .into());
+    }
+    let mut prepared = Vec::new();
+    let mut indices = Vec::new();
+    for (index, (candidate, rect)) in candidates.iter().enumerate() {
+        if let Ok(transition) = animation::Transition::new(&candidate.window, candidate.rect, *rect)
+        {
+            prepared.push(transition);
+            indices.push(index);
+        }
+    }
+    animation::run(
+        &prepared,
+        animation_settings,
+        || {},
+        |applied| {
+            let moved: Vec<_> = applied
+                .iter()
+                .zip(&indices)
+                .filter_map(|(&applied, &index)| {
+                    applied.then_some((candidates[index].0.window_number, candidates[index].0.rect))
+                })
+                .collect();
+            undo::record_group(&moved);
+            Ok(())
+        },
+    )
+    .map_err(runtime_failure)?;
+    Ok(())
+}
+
+struct CaptureRow {
+    display_index: usize,
+    app: String,
+    pid: i32,
+    window_id: i64,
+    rect: Rect,
+}
+
+fn run_capture(name: &str, config: &config::Config) -> anyhow::Result<()> {
+    let (candidates, _, _) = list_rows(ListScope::All, config.stage_manager_width)?;
+    let displays =
+        display::ordered_displays(config.stage_manager_width).map_err(runtime_failure)?;
+    let usable: Vec<_> = displays
+        .iter()
+        .map(|display| padded(display.usable, config.padding))
+        .collect();
+    let rows: Vec<_> = candidates
+        .into_iter()
+        .map(|(display_index, candidate)| CaptureRow {
+            display_index,
+            app: candidate.app_name,
+            pid: candidate.pid,
+            window_id: candidate.window_number,
+            rect: candidate.rect,
+        })
+        .collect();
+    let rows = dedupe_capture_rows(rows, &displays);
+    let snippet = capture_snippet(name, &rows, &usable, config.almost_padding)
+        .map_err(|skipped| capture_error(&skipped))?;
+    println!("{snippet}");
+    Ok(())
+}
+
+fn dedupe_capture_rows(rows: Vec<CaptureRow>, displays: &[display::Display]) -> Vec<CaptureRow> {
+    let mut seen = std::collections::HashSet::new();
+    rows.into_iter()
+        .filter(|row| {
+            row.display_index == display::display_index_containing(displays, row.rect)
+                && seen.insert(row.window_id)
+        })
+        .collect()
+}
+
+fn capture_error(skipped: &[String]) -> ExitError {
+    let mut message = String::from("error: no windows to capture");
+    for reason in skipped {
+        message.push('\n');
+        message.push_str(reason.trim_start_matches("# "));
+    }
+    ExitError(message, EXIT_RUNTIME_FAILURE)
+}
+
+fn capture_snippet(
+    name: &str,
+    rows: &[CaptureRow],
+    usable: &[Rect],
+    almost_padding: f64,
+) -> Result<String, Vec<String>> {
+    let mut ids_by_app: std::collections::HashMap<&str, Vec<i64>> =
+        std::collections::HashMap::new();
+    let mut pids_by_app: std::collections::HashMap<&str, std::collections::HashSet<i32>> =
+        std::collections::HashMap::new();
+    for row in rows {
+        ids_by_app.entry(&row.app).or_default().push(row.window_id);
+        pids_by_app.entry(&row.app).or_default().insert(row.pid);
+    }
+    for ids in ids_by_app.values_mut() {
+        *ids = named_layout::ordered_window_ids(ids);
+    }
+    let mut lines = vec![format!("[layouts.{name}]")];
+    let mut captured = 0;
+    for (row_index, row) in rows.iter().enumerate() {
+        let app = &row.app;
+        if pids_by_app[app.as_str()].len() > 1 {
+            if rows.iter().take(row_index).any(|prior| prior.app == *app) {
+                continue;
+            }
+            lines.push(format!(
+                "# {app}: multiple running processes share this app name, skipped"
+            ));
+            continue;
+        }
+        let ids = &ids_by_app[app.as_str()];
+        let ordinal =
+            (ids.len() > 1).then(|| ids.iter().position(|&id| id == row.window_id).unwrap() + 1);
+        let key_name = ordinal.map_or_else(|| app.clone(), |ordinal| format!("{app}[{ordinal}]"));
+        match named_layout::capture(usable[row.display_index], row.rect, almost_padding) {
+            Some(mut spec) => {
+                if usable.len() > 1 {
+                    spec.push_str(&format!(" on {}", row.display_index + 1));
+                }
+                if let Some(ordinal) = ordinal {
+                    spec = format!("window {ordinal} {spec}");
+                }
+                let key = if key_name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                {
+                    key_name
+                } else {
+                    format!("\"{}\"", key_name.replace('\\', "\\\\").replace('"', "\\\""))
+                };
+                lines.push(format!("{key} = \"{spec}\""));
+                captured += 1;
+            }
+            None => lines.push(format!("# {key_name}: frame ({}, {}, {}x{}) doesn't match a snap placement; place it with snap and capture again",
+                row.rect.x, row.rect.y, row.rect.width, row.rect.height)),
+        }
+    }
+    if captured == 0 {
+        return Err(lines.into_iter().skip(1).collect());
+    }
+    Ok(lines.join("\n"))
 }
 
 /// `snap focus left|right|up|down` — raises/activates the nearest window in
@@ -930,7 +1501,11 @@ fn run_stack(
                     all[0].rect,
                     usable,
                     animation_duration,
-                    || {},
+                    || {
+                        if all[0].window_number >= 0 {
+                            undo::record(all[0].window_number, all[0].rect);
+                        }
+                    },
                 )
                 .map(|_| ());
             }
@@ -983,7 +1558,11 @@ fn apply_cascade(
             candidate.rect,
             usable,
             animation_duration,
-            || {},
+            || {
+                if candidate.window_number >= 0 {
+                    undo::record(candidate.window_number, candidate.rect);
+                }
+            },
         )
         .map(|_| ());
     }
@@ -1009,7 +1588,19 @@ fn apply_cascade(
                 let _ = all[idx].window.raise();
             }
         },
-        |_| raise_and_activate(front),
+        |applied| {
+            let moved: Vec<_> = applied
+                .iter()
+                .zip(&slots)
+                .filter_map(|(&applied, &(_, idx))| {
+                    let candidate = &all[idx];
+                    (applied && candidate.window_number >= 0)
+                        .then_some((candidate.window_number, candidate.rect))
+                })
+                .collect();
+            undo::record_group(&moved);
+            raise_and_activate(front)
+        },
     )
     .map_err(runtime_failure)?;
     if debug {
@@ -1055,6 +1646,170 @@ fn runtime_failure(err: anyhow::Error) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_id_rejects_display_wide_commands() {
+        let cli = Cli::try_parse_from(["snap", "--window", "3", "tile"]).unwrap();
+        assert!(resolve_action(&cli, &config::Config::default()).is_err());
+        let cli = Cli::try_parse_from(["snap", "--window", "3", "layout", "code"]).unwrap();
+        assert!(resolve_action(&cli, &config::Config::default()).is_err());
+    }
+
+    #[test]
+    fn layout_validation_rejects_unknown_invalid_and_duplicate_entries() {
+        let layouts = vec![config::NamedLayout {
+            name: "code".into(),
+            entries: vec![
+                ("Ghostty".into(), "left 60".into()),
+                ("ghostty".into(), "right 40".into()),
+            ],
+        }];
+        assert!(layout_specs("missing", &layouts).is_err());
+        assert!(layout_specs("code", &layouts).is_err());
+        let invalid = vec![config::NamedLayout {
+            name: "code".into(),
+            entries: vec![("Ghostty".into(), "left".into())],
+        }];
+        assert!(layout_specs("code", &invalid).is_err());
+        let multiple = vec![config::NamedLayout {
+            name: "code".into(),
+            entries: vec![
+                ("Ghostty[1]".into(), "window 1 left 50".into()),
+                ("Ghostty[2]".into(), "window 2 right 50".into()),
+            ],
+        }];
+        let specs = layout_specs("code", &multiple).unwrap();
+        assert_eq!((specs[0].0, specs[0].1), ("Ghostty", Some(1)));
+        assert_eq!((specs[1].0, specs[1].1), ("Ghostty", Some(2)));
+        assert_eq!(parse_layout_entry("Foo[2]", "left 50").unwrap().0, "Foo[2]");
+        assert_eq!(parse_layout_entry("Ghostty[2]", "window 1 left 50"), None);
+    }
+
+    #[test]
+    fn capture_two_ghostty_windows_from_the_reported_frames() {
+        let usable = Rect::new(201.0, 55.0, 1583.0, 1033.0);
+        let rows = vec![
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 1561,
+                window_id: 107,
+                rect: Rect::new(201.0, 55.0, 784.0, 1033.0),
+            },
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 1561,
+                window_id: 8613,
+                rect: Rect::new(1000.0, 55.0, 784.0, 1033.0),
+            },
+        ];
+        assert_eq!(
+            named_layout::capture(usable, rows[0].rect, 48.0),
+            Some("left 50".into())
+        );
+        assert_eq!(
+            named_layout::capture(usable, rows[1].rect, 48.0),
+            Some("right 50".into())
+        );
+        let snippet = capture_snippet("code", &rows, &[usable], 48.0).unwrap();
+        assert!(snippet.contains("\"Ghostty[1]\" = \"window 1 left 50\""));
+        assert!(snippet.contains("\"Ghostty[2]\" = \"window 2 right 50\""));
+        let (_, layouts) = config::parse_all(&snippet);
+        let specs = layout_specs("code", &layouts).unwrap();
+        assert_eq!((specs[0].0, specs[0].1), ("Ghostty", Some(1)));
+        assert_eq!((specs[1].0, specs[1].1), ("Ghostty", Some(2)));
+    }
+
+    #[test]
+    fn capture_three_windows_of_one_app() {
+        let usable = Rect::new(201.0, 55.0, 1583.0, 1033.0);
+        let rows = vec![
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 1,
+                window_id: 30,
+                rect: directional_rect(usable, layout::Position::Right, 50),
+            },
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 1,
+                window_id: 20,
+                rect: third_rect(usable, layout::Third::Center),
+            },
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 1,
+                window_id: 10,
+                rect: directional_rect(usable, layout::Position::Left, 50),
+            },
+        ];
+        let snippet = capture_snippet("code", &rows, &[usable], 48.0).unwrap();
+        assert!(snippet.contains("\"Ghostty[1]\" = \"window 1 left 50\""));
+        assert!(snippet.contains("\"Ghostty[2]\" = \"window 2 third center\""));
+        assert!(snippet.contains("\"Ghostty[3]\" = \"window 3 right 50\""));
+    }
+
+    #[test]
+    fn capture_skips_same_named_apps_in_different_processes() {
+        let usable = Rect::new(0.0, 0.0, 1000.0, 800.0);
+        let rows = vec![
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 1,
+                window_id: 10,
+                rect: directional_rect(usable, layout::Position::Left, 50),
+            },
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 2,
+                window_id: 20,
+                rect: directional_rect(usable, layout::Position::Right, 50),
+            },
+        ];
+        let skipped = capture_snippet("code", &rows, &[usable], 48.0).unwrap_err();
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].contains("multiple running processes"));
+    }
+
+    #[test]
+    fn capture_keeps_spanning_window_on_its_primary_display_once() {
+        let displays = vec![
+            display::Display {
+                frame: Rect::new(0.0, 0.0, 1000.0, 800.0),
+                usable: Rect::new(0.0, 0.0, 1000.0, 800.0),
+            },
+            display::Display {
+                frame: Rect::new(1000.0, 0.0, 1000.0, 800.0),
+                usable: Rect::new(1000.0, 0.0, 1000.0, 800.0),
+            },
+        ];
+        let frame = Rect::new(800.0, 0.0, 600.0, 800.0);
+        let rows = vec![
+            CaptureRow {
+                display_index: 0,
+                app: "Ghostty".into(),
+                pid: 1,
+                window_id: 42,
+                rect: frame,
+            },
+            CaptureRow {
+                display_index: 1,
+                app: "Ghostty".into(),
+                pid: 1,
+                window_id: 42,
+                rect: frame,
+            },
+        ];
+        let kept = dedupe_capture_rows(rows, &displays);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].display_index, 1);
+    }
 
     #[test]
     fn swap_target_index_returns_none_at_display_edge() {

@@ -1,7 +1,7 @@
 //! On-disk last-rect cache for `snap undo` (PRD issue #9) — deliberately
 //! the only persistent layout state snap keeps. A flat map of
-//! `window_number -> {previous rect, timestamp}`, no daemon, no layout
-//! tree. Hand-rolled, line-oriented (de)serialization rather than pulling
+//! `window_number -> {previous rect, timestamp, optional group}`, no daemon,
+//! no layout tree. Hand-rolled, line-oriented (de)serialization rather than pulling
 //! in `serde`/`serde_json`, matching this repo's `config.rs` precedent of
 //! not adding a parsing dependency for one small file.
 
@@ -14,6 +14,7 @@ use crate::layout::Rect;
 struct Entry {
     rect: Rect,
     recorded_at: u64,
+    group: Option<u64>,
 }
 
 /// Entries older than this are treated as stale and ignored/pruned, per the
@@ -47,6 +48,35 @@ pub fn record(window_number: i64, rect: Rect) {
     record_at(&path, window_number, rect);
 }
 
+/// Records all windows moved by one command under the same undo group.
+pub fn record_group(windows: &[(i64, Rect)]) {
+    let Some(path) = cache_path() else { return };
+    record_group_at(&path, windows);
+}
+
+fn record_group_at(path: &Path, windows: &[(i64, Rect)]) {
+    if windows.is_empty() {
+        return;
+    }
+    let mut entries = load(path);
+    prune(&mut entries);
+    let group = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    for &(id, rect) in windows {
+        entries.insert(
+            id,
+            Entry {
+                rect,
+                recorded_at: now(),
+                group: Some(group),
+            },
+        );
+    }
+    save(path, &entries);
+}
+
 fn record_at(path: &Path, window_number: i64, rect: Rect) {
     let mut entries = load(path);
     prune(&mut entries);
@@ -55,19 +85,38 @@ fn record_at(path: &Path, window_number: i64, rect: Rect) {
         Entry {
             rect,
             recorded_at: now(),
+            group: None,
         },
     );
     save(path, &entries);
 }
 
-/// Reads the frame that undo would restore without changing the cache.
-/// Call [`record`] with the current frame only after the move completes so
-/// a cancelled animation does not claim that the toggle was applied.
-pub fn previous(window_number: i64) -> Option<Rect> {
-    let path = cache_path()?;
-    previous_at(&path, window_number)
+/// Returns the focused window's current undo group, or only that window for
+/// entries written before groups existed.
+pub fn previous_group(window_number: i64) -> Vec<(i64, Rect)> {
+    let Some(path) = cache_path() else {
+        return Vec::new();
+    };
+    previous_group_at(&path, window_number)
 }
 
+fn previous_group_at(path: &Path, window_number: i64) -> Vec<(i64, Rect)> {
+    let mut entries = load(path);
+    prune(&mut entries);
+    let Some(entry) = entries.get(&window_number) else {
+        return Vec::new();
+    };
+    match entry.group {
+        Some(group) => entries
+            .into_iter()
+            .filter(|(_, entry)| entry.group == Some(group))
+            .map(|(id, entry)| (id, entry.rect))
+            .collect(),
+        None => vec![(window_number, entry.rect)],
+    }
+}
+
+#[cfg(test)]
 fn previous_at(path: &Path, window_number: i64) -> Option<Rect> {
     let mut entries = load(path);
     prune(&mut entries);
@@ -102,8 +151,15 @@ fn serialize(entries: &HashMap<i64, Entry>) -> String {
     for (i, id) in keys.iter().enumerate() {
         let e = &entries[id];
         out.push_str(&format!(
-            "  \"{id}\": {{\"x\":{},\"y\":{},\"width\":{},\"height\":{},\"t\":{}}}",
-            e.rect.x, e.rect.y, e.rect.width, e.rect.height, e.recorded_at
+            "  \"{id}\": {{\"x\":{},\"y\":{},\"width\":{},\"height\":{},\"t\":{}{} }}",
+            e.rect.x,
+            e.rect.y,
+            e.rect.width,
+            e.rect.height,
+            e.recorded_at,
+            e.group
+                .map(|group| format!(",\"g\":{group}"))
+                .unwrap_or_default()
         ));
         if i + 1 < keys.len() {
             out.push(',');
@@ -130,7 +186,8 @@ fn parse(contents: &str) -> HashMap<i64, Entry> {
         };
         let rest = rest.trim().trim_start_matches('{').trim_end_matches('}');
 
-        let (mut x, mut y, mut width, mut height, mut t) = (None, None, None, None, None);
+        let (mut x, mut y, mut width, mut height, mut t, mut group) =
+            (None, None, None, None, None, None);
         for field in rest.split(',') {
             let Some((k, v)) = field.split_once(':') else {
                 continue;
@@ -141,6 +198,7 @@ fn parse(contents: &str) -> HashMap<i64, Entry> {
                 "width" => width = v.trim().parse::<f64>().ok(),
                 "height" => height = v.trim().parse::<f64>().ok(),
                 "t" => t = v.trim().parse::<u64>().ok(),
+                "g" => group = v.trim().parse::<u64>().ok(),
                 _ => {}
             }
         }
@@ -150,6 +208,7 @@ fn parse(contents: &str) -> HashMap<i64, Entry> {
                 Entry {
                     rect: Rect::new(x, y, width, height),
                     recorded_at: t,
+                    group,
                 },
             );
         }
@@ -177,6 +236,7 @@ mod tests {
             Entry {
                 rect: Rect::new(1.0, 2.0, 3.0, 4.0),
                 recorded_at: 1000,
+                group: None,
             },
         );
         let text = serialize(&entries);
@@ -248,6 +308,7 @@ mod tests {
             Entry {
                 rect: Rect::new(0.0, 0.0, 1.0, 1.0),
                 recorded_at: 0, // far in the past
+                group: None,
             },
         );
         save(&path, &entries);
@@ -260,5 +321,25 @@ mod tests {
     fn missing_file_is_treated_as_empty_not_an_error() {
         let path = temp_path();
         assert_eq!(load(&path).len(), 0);
+    }
+
+    #[test]
+    fn group_membership_survives_round_trip_and_single_move_removes_member() {
+        let path = temp_path();
+        let a = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let b = Rect::new(100.0, 0.0, 100.0, 100.0);
+        record_group_at(&path, &[(1, a), (2, b)]);
+        assert_eq!(previous_group_at(&path, 1).len(), 2);
+        record_at(&path, 2, a);
+        assert_eq!(previous_group_at(&path, 1), vec![(1, a)]);
+        assert_eq!(previous_group_at(&path, 2), vec![(2, a)]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn old_cache_without_group_still_loads() {
+        let parsed =
+            parse("{\n\"4\": {\"x\":1,\"y\":2,\"width\":3,\"height\":4,\"t\":9999999999}\n}");
+        assert_eq!(parsed[&4].group, None);
     }
 }

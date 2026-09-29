@@ -23,10 +23,14 @@ pub struct Cli {
     /// Target a window by application name instead of the focused window.
     /// Exact match, case-insensitive, against the app name as CGWindowList
     /// (and Activity Monitor) report it. Applies to size, sides, corners,
-    /// `full`, `center`, and `display`; not to `tile` or other display-wide
-    /// commands.
+    /// `full`, `almost`, `center`, `grow`, `shrink`, `third`, and `display`;
+    /// not to `tile` or other display-wide commands.
     #[arg(long, global = true, value_name = "NAME")]
     pub app: Option<String>,
+
+    /// Target an on-screen window by the ID shown by `snap list`.
+    #[arg(long, global = true, conflicts_with = "app", value_parser = parse_window_id, value_name = "ID")]
+    pub window: Option<i64>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -87,6 +91,9 @@ pub enum Command {
         /// or list every attached display.
         #[arg(long, value_enum, default_value = "current")]
         display: ListScope,
+        /// Print machine-readable window details.
+        #[arg(long)]
+        json: bool,
     },
     /// Focus/raise the nearest window in a direction on the current
     /// display, without moving or resizing anything.
@@ -108,8 +115,8 @@ pub enum Command {
         #[arg(value_name = "ACTION", value_parser = parse_stack_action)]
         action: Option<StackAction>,
     },
-    /// Restore the focused window to its previous frame (toggles: a second
-    /// `undo` returns to where the first one started).
+    /// Restore the focused window or its tile/stack/layout group to previous
+    /// frames (a second `undo` toggles back).
     Undo,
     /// Compatibility cleanup for a launch agent installed by an older snap.
     #[command(name = "daemon", hide = true)]
@@ -118,9 +125,21 @@ pub enum Command {
         action: LegacyDaemonCommand,
     },
     /// Print Accessibility trust, config, displays, and the focused window,
-    /// for debugging a broken setup. Read-only; the one other command
-    /// (besides `list`) that prints on success.
-    Doctor,
+    /// for debugging a broken setup. Read-only.
+    Doctor {
+        /// Print machine-readable diagnostics.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List named layouts, apply one, or print a capture snippet. Numbered
+    /// entries such as "Ghostty[2]" = "window 2 right 50" select multiple windows.
+    /// Examples: `snap layout`, `snap layout code`, `snap layout capture code`.
+    Layout {
+        /// Layout name, or `capture` followed by a new layout name.
+        name: Option<String>,
+        #[arg(value_name = "CAPTURE_NAME")]
+        capture_name: Option<String>,
+    },
     /// Move the focused window to another display, preserving its relative
     /// position and size.
     Display {
@@ -158,19 +177,11 @@ fn parse_stack_action(s: &str) -> Result<StackAction, String> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_the_retired_last_command() {
-        assert!(Cli::try_parse_from(["snap", "last"]).is_err());
-    }
-
-    #[test]
-    fn rejects_the_retired_daemon_command() {
-        assert!(Cli::try_parse_from(["snap", "daemon", "install"]).is_err());
-    }
+fn parse_window_id(s: &str) -> Result<i64, String> {
+    s.parse::<i64>()
+        .ok()
+        .filter(|id| *id >= 0)
+        .ok_or_else(|| format!("invalid window id '{s}' (expected a non-negative integer)"))
 }
 
 fn parse_third(s: &str) -> Result<Third, String> {
@@ -207,5 +218,33 @@ impl Command {
             Command::BottomRight { size } => Some((Position::BottomRight, *size)),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_the_retired_last_command() {
+        assert!(Cli::try_parse_from(["snap", "last"]).is_err());
+    }
+
+    #[test]
+    fn rejects_the_retired_daemon_command() {
+        assert!(Cli::try_parse_from(["snap", "daemon", "install"]).is_err());
+    }
+
+    #[test]
+    fn window_id_and_json_flags_parse_only_where_supported() {
+        assert!(Cli::try_parse_from(["snap", "--window", "190", "right", "40"]).is_ok());
+        assert!(Cli::try_parse_from(["snap", "--window", "-1", "full"]).is_err());
+        assert!(Cli::try_parse_from(["snap", "--window", "abc", "full"]).is_err());
+        assert!(
+            Cli::try_parse_from(["snap", "--window", "1", "--app", "Ghostty", "full"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["snap", "list", "--json"]).is_ok());
+        assert!(Cli::try_parse_from(["snap", "doctor", "--json"]).is_ok());
+        assert!(Cli::try_parse_from(["snap", "full", "--json"]).is_err());
     }
 }
