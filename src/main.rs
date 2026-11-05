@@ -925,28 +925,8 @@ fn run_tile(
     let target_display =
         display::target_display_for(focused_rect, stage_manager_width).map_err(runtime_failure)?;
 
-    let mut candidates =
-        window::visible_windows_on(target_display.frame).map_err(runtime_failure)?;
-    let focused_index = candidates
-        .iter()
-        .position(|c| rects_roughly_equal(c.rect, focused_rect));
-
-    let mut ordered = Vec::with_capacity(candidates.len().max(1));
-    match focused_index {
-        Some(idx) => ordered.push(candidates.remove(idx)),
-        // The focused window wasn't in the tileable candidate set (e.g. a
-        // dialog Accessibility can still move) — fall back to a minimal
-        // candidate for it directly rather than dropping it from the tile.
-        None => ordered.push(window::TileCandidate {
-            window: focused,
-            rect: focused_rect,
-            pid: 0,
-            app_name: String::new(),
-            title: None,
-            window_number: -1,
-        }),
-    }
-    ordered.extend(candidates);
+    let candidates = window::visible_windows_on(target_display.frame).map_err(runtime_failure)?;
+    let ordered = window::focused_first(candidates, focused_rect);
 
     // The same padding value governs both the outer margin (window-to-screen-edge)
     // and the inter-tile gap, matching how `snap left/right/top/bottom/full/center`
@@ -1450,27 +1430,13 @@ fn run_stack(
     let target_display =
         display::target_display_for(focused_rect, stage_manager_width).map_err(runtime_failure)?;
 
-    let mut candidates =
-        window::visible_windows_on(target_display.frame).map_err(runtime_failure)?;
-    let focused_index = candidates
-        .iter()
-        .position(|c| rects_roughly_equal(c.rect, focused_rect));
-
-    let mut all = Vec::with_capacity(candidates.len().max(1));
-    match focused_index {
-        Some(idx) => all.push(candidates.remove(idx)),
-        None => all.push(window::TileCandidate {
-            window: focused,
-            rect: focused_rect,
-            pid: 0,
-            app_name: String::new(),
-            title: None,
-            window_number: -1,
-        }),
-    }
-    all.extend(candidates); // all[0] = focused; the rest in tile (visual) order.
+    let candidates = window::visible_windows_on(target_display.frame).map_err(runtime_failure)?;
+    let all = window::focused_first(candidates, focused_rect);
 
     let n = all.len();
+    if n == 0 {
+        return Ok(());
+    }
     let usable = padded(target_display.usable, padding);
 
     // Tile (visual) order over the same candidate set, independent of

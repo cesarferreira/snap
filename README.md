@@ -188,9 +188,11 @@ snap tile     # tile visible windows on the current display
 
 `snap tile` lays windows out deterministically: 1 window fills the screen, 2
 split 50/50, 3 use a master + stack layout, 4 form a 2×2 grid, and 5+ form a
-balanced grid (`columns = ceil(sqrt(n))`). The focused window always gets the
-first slot; the rest are ordered top-to-bottom, then left-to-right. Only the
-current display is affected — other monitors are left alone.
+balanced grid (`columns = ceil(sqrt(n))`). The focused window gets the first
+slot if it is eligible for tiling; the rest are ordered top-to-bottom, then
+left-to-right. Picture-in-Picture, dialogs, and other floating windows are
+ignored, even when focused. Only the current display is affected — other
+monitors are left alone.
 
 ```bash
 snap tile --gap 24   # override the gap between tiles for this run

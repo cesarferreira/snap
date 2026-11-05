@@ -139,17 +139,32 @@ impl Window {
     /// attributes are safe to write.
     pub(crate) fn apply_rect(&self, rect: Rect, change: RectChange) -> Result<()> {
         if change.position {
-            self.set_ax_value(
-                &position_attr(),
-                kAXValueTypeCGPoint,
-                &CGPoint::new(rect.x, rect.y),
+            verify_geometry_write(
+                self.set_ax_value(
+                    &position_attr(),
+                    kAXValueTypeCGPoint,
+                    &CGPoint::new(rect.x, rect.y),
+                ),
+                (rect.x, rect.y),
+                || {
+                    let actual: CGPoint =
+                        self.get_ax_value(&position_attr(), kAXValueTypeCGPoint)?;
+                    Ok((actual.x, actual.y))
+                },
             )?;
         }
         if change.size {
-            self.set_ax_value(
-                &size_attr(),
-                kAXValueTypeCGSize,
-                &CGSize::new(rect.width, rect.height),
+            verify_geometry_write(
+                self.set_ax_value(
+                    &size_attr(),
+                    kAXValueTypeCGSize,
+                    &CGSize::new(rect.width, rect.height),
+                ),
+                (rect.width, rect.height),
+                || {
+                    let actual: CGSize = self.get_ax_value(&size_attr(), kAXValueTypeCGSize)?;
+                    Ok((actual.width, actual.height))
+                },
             )?;
         }
         Ok(())
@@ -381,6 +396,23 @@ fn overlap_area(a: Rect, b: Rect) -> f64 {
     x_overlap.max(0.0) * y_overlap.max(0.0)
 }
 
+fn verify_geometry_write(
+    result: Result<()>,
+    expected: (f64, f64),
+    readback: impl FnOnce() -> Result<(f64, f64)>,
+) -> Result<()> {
+    result.or_else(|error| {
+        // Dia can apply an AX write and still report AttributeUnsupported.
+        // Confirm both components before allowing the animation to continue.
+        if let Ok(actual) = readback() {
+            if points_equal(actual.0, expected.0) && points_equal(actual.1, expected.1) {
+                return Ok(());
+            }
+        }
+        Err(error)
+    })
+}
+
 fn points_equal(a: f64, b: f64) -> bool {
     (a - b).abs() < 1.0
 }
@@ -403,5 +435,117 @@ pub fn activate_app(pid: pid_t) {
     let options = NSApplicationActivationOptions::ActivateIgnoringOtherApps;
     if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
         app.activateWithOptions(options);
+    }
+}
+
+/// Prioritizes the focused window only when it passed the group filters.
+/// Excluded windows (such as PiP and dialogs) must not take a layout slot.
+pub fn focused_first(mut candidates: Vec<TileCandidate>, focused_rect: Rect) -> Vec<TileCandidate> {
+    let focused_index = candidates
+        .iter()
+        .position(|candidate| rects_roughly_equal(candidate.rect, focused_rect));
+    if let Some(index) = focused_index {
+        let candidate = candidates.remove(index);
+        candidates.insert(0, candidate);
+    }
+    candidates
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidate(id: i64, rect: Rect) -> TileCandidate {
+        TileCandidate {
+            window: Window {
+                element: AXUIElement::application(std::process::id() as pid_t),
+            },
+            rect,
+            pid: std::process::id() as pid_t,
+            app_name: "Browser".into(),
+            title: None,
+            window_number: id,
+        }
+    }
+
+    #[test]
+    fn reported_resize_error_is_accepted_when_readback_confirms_it_applied() {
+        assert!(
+            verify_geometry_write(
+                Err(anyhow!("window cannot be resized")),
+                (1603.5, 1313.0),
+                || Ok((1603.0, 1313.0)),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn reported_geometry_error_is_preserved_when_write_did_not_apply() {
+        for actual in [(2305.0, 1313.0), (1603.0, 900.0)] {
+            let result = verify_geometry_write(
+                Err(anyhow!("original write error")),
+                (1603.5, 1313.0),
+                || Ok(actual),
+            );
+            assert_eq!(result.unwrap_err().to_string(), "original write error");
+        }
+        let result = verify_geometry_write(
+            Err(anyhow!("original write error")),
+            (1603.5, 1313.0),
+            || Err(anyhow!("read failed")),
+        );
+        assert_eq!(result.unwrap_err().to_string(), "original write error");
+    }
+
+    #[test]
+    fn successful_geometry_write_does_not_query_readback() {
+        assert!(
+            verify_geometry_write(Ok(()), (1603.5, 1313.0), || {
+                panic!("successful writes need no verification query")
+            })
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn excluded_focused_pip_does_not_take_a_grid_slot() {
+        let pip = Rect::new(10.0, 1087.0, 494.0, 278.0);
+        let windows = vec![
+            candidate(10, Rect::new(200.0, 50.0, 1000.0, 800.0)),
+            candidate(20, Rect::new(400.0, 100.0, 1000.0, 800.0)),
+        ];
+        let ordered = focused_first(windows, pip);
+        let ids: Vec<_> = ordered
+            .iter()
+            .map(|candidate| candidate.window_number)
+            .collect();
+        assert_eq!(ids, vec![10, 20]);
+    }
+
+    #[test]
+    fn excluded_focus_with_no_normal_windows_leaves_group_empty() {
+        let pip = Rect::new(10.0, 1087.0, 494.0, 278.0);
+        assert!(focused_first(vec![], pip).is_empty());
+    }
+
+    #[test]
+    fn normal_focus_is_first_without_reordering_other_windows() {
+        let rects = [
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            Rect::new(800.0, 0.0, 800.0, 600.0),
+            Rect::new(0.0, 600.0, 800.0, 600.0),
+        ];
+        let windows = rects
+            .into_iter()
+            .enumerate()
+            .map(|(index, rect)| candidate(index as i64 + 1, rect))
+            .collect();
+        let ordered = focused_first(windows, rects[2]);
+        let ids: Vec<_> = ordered
+            .iter()
+            .map(|candidate| candidate.window_number)
+            .collect();
+        assert_eq!(ids, vec![3, 1, 2]);
     }
 }
