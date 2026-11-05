@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.1] - 2026-11-05
+
+### 🚀 Features
+
+- Implement named layouts and window scripting issues
+- Capture multiple windows per app in layouts
+
+### 🐛 Bug Fixes
+
+- Explain capture failure when an app has multiple windows
+- Ignore PiP in group layouts and complete Dia resizing
 ## [0.6.0] - 2026-09-03
 
 ### 🚀 Features
